@@ -1,0 +1,59 @@
+# ==============================================================================
+# Spatio-Temporal DAMR (SpaceTimeViT + BERT) Configuration File
+# Text-to-Video Person Retrieval (TVPR) on TVPReid Benchmark
+# Pure ViT + BERT Architecture (No CLIP pretraining dependency)
+# ==============================================================================
+
+model:
+  arch: "spacetime_damr"                   # Divided Space-Time Vision Transformer + BERT
+  embed_dim: 768                           # 768-D shared representation space (BERT-base / ViT-base)
+  text_model_name: "bert-base-uncased"     # Text Encoder backbone (Hugging Face)
+  use_clip_text: false                     # Pure ViT/BERT: No CLIP text dependency
+  use_clip_vision: false                   # Pure ViT/BERT: No CLIP vision dependency
+  pretrained: true                         # Pretrained BERT weights
+  
+  # --- Video Frame Sampling & SpaceTimeViT Settings ---
+  num_frames: 16                           # T = 16 frames sampled across temporal sequence
+  motion_frame_num: 16                     # Kept for backward compatibility
+  keyframe_num: 4                          # Kept for backward compatibility
+  img_size: 224                            # Image input resolution (224x224)
+  vit_depth: 6                             # 6 Divided Space-Time Transformer Blocks
+  vit_heads: 12                            # 12 attention heads per block (ViT-Base standard: 768 / 12 = 64)
+  drop_rate: 0.1                           # Dropout rate
+  pretrained_vit: true                     # Load ImageNet-1K pretrained weights into ViT spatial layers
+  use_dsca: true                           # Disentangled Semantic Concept Alignment
+  
+  # --- Loss Weights & Hyperparameters ---
+  temperature: 0.07                        # InfoNCE Softmax Temperature (tau=0.07 for stable non-oscillating gradients)
+  lambda_app: 0.5                          # Weight for static appearance alignment InfoNCE
+  lambda_mim: 0.1                          # Weight for Mutual Information Minimization (V_app \perp V_mot)
+  lambda_mot: 0.25                         # Kept for backward compatibility
+  alpha: 0.5                               # Evaluation weight blend (balanced 50% fused video + 50% appearance)
+
+data:
+  dataset_name: "TVPReid"                  # TVPReid benchmark
+  sub_dataset: "TVPReid-Duke"              # Default sub-dataset (Duke, PRID, iLIDs, or all)
+  data_root: "auto"                        # Auto-detected by utils/paths.py or override
+  batch_size: 16                           # Batch size 16: larger negative pool (15 negatives) for stable contrastive learning
+  num_workers: 2                           # High-throughput data loader worker subprocesses
+  pin_memory: true                         # Fast VRAM memory pinning
+  drop_last: true                          # Drop incomplete final mini-batch
+
+train:
+  seed: 42                                 # Fixed seed for 100% reproducible experiments
+  device: "cuda"                           # "cuda" for GPU acceleration or "cpu"
+  epochs: 35                               # Total training epochs
+  warmup_epochs: 2                         # 2 warmup epochs for smooth transformer initialization
+  lr: 0.0001                               # Base learning rate (1e-4)
+  min_lr: 0.000001                         # Minimum cosine decayed learning rate (1e-6)
+  weight_decay: 0.0001                     # AdamW weight decay regularization
+  grad_clip_norm: 1.0                      # Gradient clipping threshold (prevents loss spikes)
+  grad_accum_steps: 1                      # 1 step accumulation with BS=16 for maximum gradient fidelity
+  use_amp: true                            # PyTorch Automatic Mixed Precision (AMP FP16)
+  save_dir: "checkpoints"                  # Directory to save best.pth and latest.pth
+  log_interval: 10                         # Log progress every N mini-batches
+  eval_interval: 1                         # Evaluate validation Rank@K every epoch
+
+eval:
+  batch_size: 16                           # Batch size for evaluation
+  ranks: [1, 5, 10, 50]                    # Standard TVPR Rank@K benchmarks
