@@ -49,7 +49,7 @@ from utils.paths import paths, normalize_sub_dataset_name
 from data.dataset import create_dataloaders
 from models.damr_main import DAMRModel
 from utils.metrics import compute_similarity_matrix, evaluate_rank_metrics
-from utils.plot_benchmarks import plot_comprehensive_confusion_matrix
+from utils.plot_benchmarks import plot_comprehensive_confusion_matrix, plot_training_dashboard
 
 
 @torch.no_grad()
@@ -60,7 +60,9 @@ def run_evaluation(
     alpha: float = 0.5,
     confusion_matrix: bool = False,
     cm_size: int = 10,
-    output_dir: str = None
+    output_dir: str = None,
+    history: dict = None,
+    export_dashboard: bool = False
 ):
     """
     Evaluates Text-to-Video Person Retrieval following standard TVPR benchmark protocol:
@@ -148,8 +150,8 @@ def run_evaluation(
     print(f"mAP     : {metrics.get('mAP', 0.0):.2f}%")
     print("==========================================\n")
 
+    out_dir = output_dir or str(paths.reports_dir)
     if confusion_matrix:
-        out_dir = output_dir or str(paths.reports_dir)
         print(f"🎨 Generating Comprehensive Cross-Modal Confusion Matrices in: {out_dir}")
         cm_outputs = plot_comprehensive_confusion_matrix(
             sim_matrix=sim_matrix,
@@ -158,6 +160,18 @@ def run_evaluation(
             output_dir=out_dir,
             max_identities=cm_size
         )
+
+    if (confusion_matrix or export_dashboard) and history:
+        try:
+            print(f"📈 Regenerating Training Dashboard with Evaluated Similarity Matrix...")
+            hist_copy = dict(history)
+            hist_copy["sim_matrix"] = sim_matrix
+            hist_copy["pids"] = pids_video
+            hist_copy["pids_text"] = pids_text
+            out_dash = os.path.join(out_dir, "training_dashboard.png")
+            plot_training_dashboard(hist_copy, output_path=out_dash)
+        except Exception as e:
+            print(f"[!] Warning: Could not regenerate training dashboard: {e}")
 
     return metrics
 
@@ -203,6 +217,7 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.85, help="Weight blend between fused video and appearance (default: 0.85)")
     parser.add_argument("--confusion_matrix", "--cm", action="store_true", help="Generate and export comprehensive cross-modal confusion matrices")
     parser.add_argument("--cm_size", type=int, default=10, help="Number of identities to display in confusion matrix heatmap (default: 10)")
+    parser.add_argument("--dashboard", action="store_true", help="Regenerate training dashboard from checkpoint history")
     parser.add_argument("--reports_dir", type=str, default=None, help="Custom output directory to save reports and confusion matrix plots")
     args, unknown = parser.parse_known_args()
 
@@ -226,6 +241,7 @@ def main():
     ).to(device)
 
     checkpoint_path = args.checkpoint or str(paths.get_checkpoint_path("best.pth"))
+    history = None
     if os.path.exists(checkpoint_path):
         print(f"📦 Loading Checkpoint from {checkpoint_path}")
         try:
@@ -233,6 +249,7 @@ def main():
         except TypeError:
             ckpt = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])
+        history = ckpt.get("history", None)
     else:
         print(f"⚠️ No checkpoint found at {checkpoint_path}. Running evaluation with initialized weights.")
 
@@ -254,7 +271,9 @@ def main():
             alpha=args.alpha,
             confusion_matrix=args.confusion_matrix,
             cm_size=args.cm_size,
-            output_dir=args.reports_dir
+            output_dir=args.reports_dir,
+            history=history,
+            export_dashboard=args.dashboard
         )
 
 

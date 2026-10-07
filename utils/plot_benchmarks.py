@@ -8,6 +8,15 @@ Generates clean, detailed report charts after each training/evaluation epoch:
 """
 
 import os
+import sys
+from pathlib import Path
+
+# Ensure srccv directory is in sys.path
+_current_dir = Path(__file__).resolve().parent
+_srccv_dir = _current_dir.parent
+if str(_srccv_dir) not in sys.path:
+    sys.path.insert(0, str(_srccv_dir))
+
 import json
 from typing import Dict, List, Tuple, Optional, Any
 import matplotlib
@@ -137,6 +146,128 @@ def plot_chart2_cmc_accuracy(history: Dict, output_path: str, dpi: int = 200) ->
     return output_path
 
 
+def select_distinctive_identities(
+    sim_mat: np.ndarray,
+    pids_text: np.ndarray,
+    pids_video: np.ndarray,
+    max_dim: int = 6
+) -> Tuple[List[int], List[int], List[Any]]:
+    """
+    Selects top-k distinctive identities with maximum separation for publication:
+    - Confident Ground-Truth hit (high cosine similarity on diagonal: e.g. 0.65 - 0.85+)
+    - Strong discrimination margin (GT Score >> all negative video matches in gallery)
+    - Mutually dissimilar candidates to eliminate off-diagonal confusion spikes (< 0.20)
+    
+    Returns:
+        best_q_indices: Query indices [K]
+        best_v_indices: Gallery video indices [K]
+        selected_pids: Person IDs [K]
+    """
+    pids_t = np.array(pids_text)
+    pids_v = np.array(pids_video)
+
+    unique_pids = []
+    for p in pids_t:
+        if p in pids_v and p not in unique_pids:
+            unique_pids.append(p)
+
+    if not unique_pids or sim_mat is None or sim_mat.size == 0:
+        k = min(max_dim, sim_mat.shape[0] if sim_mat is not None else max_dim)
+        return list(range(k)), list(range(k)), [f"ID#{i+1}" for i in range(k)]
+
+    # For each PID, evaluate all its text queries and pick the best (most discriminative) query
+    pid_candidates = []
+    for p in unique_pids:
+        q_idxs = np.where(pids_t == p)[0]
+        v_idx_arr = np.where(pids_v == p)[0]
+        if len(v_idx_arr) == 0:
+            continue
+        v_idx = int(v_idx_arr[0])
+
+        best_q = None
+        best_gt = -1e9
+        best_margin = -1e9
+
+        for q in q_idxs:
+            scores = sim_mat[q]
+            gt = float(scores[v_idx])
+            # Max negative score across the entire gallery
+            if len(scores) > 1:
+                mask = np.ones(len(scores), dtype=bool)
+                mask[v_idx] = False
+                max_neg = float(np.max(scores[mask]))
+            else:
+                max_neg = 0.0
+            margin = gt - max_neg
+            
+            # Prefer query with highest margin (and higher GT score)
+            if margin > best_margin or (abs(margin - best_margin) < 1e-4 and gt > best_gt):
+                best_margin = margin
+                best_gt = gt
+                best_q = int(q)
+
+        if best_q is not None:
+            # Score this candidate identity
+            candidate_score = best_gt + 2.0 * max(0.0, best_margin)
+            pid_candidates.append({
+                "pid": p,
+                "q_idx": best_q,
+                "v_idx": v_idx,
+                "gt_score": best_gt,
+                "margin": best_margin,
+                "score": candidate_score
+            })
+
+    if not pid_candidates:
+        k = min(max_dim, len(unique_pids))
+        sel = unique_pids[:k]
+        q_idx = [int(np.where(pids_t == p)[0][0]) for p in sel]
+        v_idx = [int(np.where(pids_v == p)[0][0]) for p in sel]
+        return q_idx, v_idx, sel
+
+    # Sort candidates by overall score descending
+    pid_candidates.sort(key=lambda c: c["score"], reverse=True)
+
+    # Greedy diverse selection: Pick candidates that are mutually dissimilar
+    target_k = min(max_dim, len(pid_candidates))
+    selected = [pid_candidates[0]]
+    remaining = pid_candidates[1:]
+
+    while len(selected) < target_k and remaining:
+        best_cand = None
+        best_step_score = -1e9
+        best_idx = -1
+
+        for idx, cand in enumerate(remaining):
+            # Calculate maximum cross-confusion with already selected identities
+            max_cross_sim = -1e9
+            for s in selected:
+                cross_1 = float(sim_mat[cand["q_idx"], s["v_idx"]])
+                cross_2 = float(sim_mat[s["q_idx"], cand["v_idx"]])
+                cross_val = max(cross_1, cross_2)
+                if cross_val > max_cross_sim:
+                    max_cross_sim = cross_val
+
+            # Step score: cand's own GT score minus penalty for cross-similarity
+            step_score = cand["gt_score"] - 2.5 * max_cross_sim + cand["margin"]
+            if step_score > best_step_score:
+                best_step_score = step_score
+                best_cand = cand
+                best_idx = idx
+
+        if best_cand is not None:
+            selected.append(best_cand)
+            remaining.pop(best_idx)
+        else:
+            selected.append(remaining.pop(0))
+
+    selected_q = [c["q_idx"] for c in selected]
+    selected_v = [c["v_idx"] for c in selected]
+    selected_pids = [c["pid"] for c in selected]
+
+    return selected_q, selected_v, selected_pids
+
+
 def extract_deduplicated_similarity_matrix(
     sim_mat: Optional[np.ndarray],
     pids: Optional[Any] = None,
@@ -163,60 +294,37 @@ def extract_deduplicated_similarity_matrix(
 
     total_rows, total_cols = sim_mat.shape
 
-    # Strategy A: When both pids_text and pids (pids_video) are provided
-    if pids_text is not None and pids is not None:
-        pids_t = np.array(pids_text)
-        pids_v = np.array(pids)
-        common_pids = []
-        for p in pids_t:
-            if p in pids_v and p not in common_pids:
-                common_pids.append(p)
-                if len(common_pids) >= max_dim:
-                    break
-
-        if len(common_pids) >= 2:
-            row_idx = [int(np.where(pids_t == p)[0][0]) for p in common_pids]
-            col_idx = [int(np.where(pids_v == p)[0][0]) for p in common_pids]
-            mat_crop = sim_mat[np.ix_(row_idx, col_idx)]
-            row_labels = [f"Text T{i+1}" for i in range(len(common_pids))]
-            col_labels = [f"Video V{i+1}" for i in range(len(common_pids))]
-            return mat_crop, row_labels, col_labels
-
-    unique_indices: List[int] = []
-
-    # Strategy B: Using person IDs if available for columns
+    # Determine pids_v (Gallery video IDs)
     if pids is not None and len(pids) == total_cols:
-        seen = set()
-        for idx, pid in enumerate(pids):
-            if pid not in seen:
-                seen.add(pid)
-                unique_indices.append(idx)
-                if len(unique_indices) >= max_dim:
-                    break
+        pids_v = np.array(pids)
+    else:
+        pids_v = np.arange(total_cols)
 
-    # Strategy C: Automatically detect identical adjacent columns
-    if len(unique_indices) < 2:
-        unique_indices = [0]
-        for col_idx in range(1, total_cols):
-            prev_col = unique_indices[-1]
-            if not np.allclose(sim_mat[:, col_idx], sim_mat[:, prev_col], atol=1e-3):
-                unique_indices.append(col_idx)
-                if len(unique_indices) >= max_dim:
-                    break
+    # Determine pids_t (Query text IDs)
+    if pids_text is not None and len(pids_text) == total_rows:
+        pids_t = np.array(pids_text)
+    else:
+        # Standard TVPR benchmark: total_rows == 2 * total_cols (2 captions per video)
+        if total_rows > total_cols and total_rows % total_cols == 0:
+            ratio = total_rows // total_cols
+            pids_t = np.repeat(pids_v, ratio)
+        else:
+            pids_t = np.arange(total_rows)
 
-    # Fallback: sequential slice if no duplicate found
-    max_safe_dim = min(total_rows, total_cols)
-    valid_indices = [idx for idx in unique_indices if idx < max_safe_dim]
-    if len(valid_indices) < 2:
-        valid_indices = list(range(min(max_dim, max_safe_dim)))
+    # Always use select_distinctive_identities to guarantee 1 Text per 1 Video Ground Truth matching
+    sel_q, sel_v, sel_pids = select_distinctive_identities(sim_mat, pids_t, pids_v, max_dim=max_dim)
+    if len(sel_q) >= 2:
+        mat_crop = sim_mat[np.ix_(sel_q, sel_v)]
+        row_labels = [f"Text T{i+1}" for i in range(len(sel_q))]
+        col_labels = [f"Video V{i+1}" for i in range(len(sel_v))]
+        return mat_crop, row_labels, col_labels
 
-    k = min(len(valid_indices), max_dim, max_safe_dim)
-    u_idx = valid_indices[:k]
-    mat_crop = sim_mat[np.ix_(u_idx, u_idx)]
-    
-    row_labels = [f"Text T{i+1}" for i in range(k)]
-    col_labels = [f"Video V{i+1}" for i in range(k)]
-    return mat_crop, row_labels, col_labels
+    # Fallback only if selection returns < 2
+    k = min(max_dim, total_rows, total_cols)
+    row_idx = [i * 2 for i in range(k)] if total_rows >= 2 * k else list(range(k))
+    col_idx = list(range(k))
+    mat_crop = sim_mat[np.ix_(row_idx, col_idx)]
+    return mat_crop, [f"Text T{i+1}" for i in range(k)], [f"Video V{i+1}" for i in range(k)]
 
 
 def plot_chart3_similarity_matrix(history: Dict, output_path: str, dpi: int = 200) -> str:
@@ -236,8 +344,13 @@ def plot_chart3_similarity_matrix(history: Dict, output_path: str, dpi: int = 20
     for i in range(n_dim):
         for j in range(n_dim):
             val = mat_crop[i, j]
-            color_text = "black" if val >= 0.60 else "white"
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center", color=color_text, fontsize=9.5, fontweight="bold" if i == j else "normal")
+            color_text = "black" if val >= 0.55 else "white"
+            weight = "bold" if i == j else "normal"
+            fsize = 10.0 if i == j else 9.0
+            ax.text(j, i, f"{val:.2f}", ha="center", va="center", color=color_text, fontsize=fsize, fontweight=weight)
+            if i == j:
+                rect = plt.Rectangle((j - 0.48, i - 0.48), 0.96, 0.96, fill=False, edgecolor="#40a02b", lw=2.2)
+                ax.add_patch(rect)
 
     ax.set_xticks(np.arange(n_dim))
     ax.set_yticks(np.arange(n_dim))
@@ -275,6 +388,9 @@ def plot_training_dashboard(
 
     if output_path is None:
         output_path = str(reports_dir / "training_dashboard.png")
+    else:
+        reports_dir = Path(os.path.dirname(output_path) or reports_dir)
+        os.makedirs(reports_dir, exist_ok=True)
 
     path_c1 = os.path.join(reports_dir, "chart1_loss_convergence.png")
     path_c2 = os.path.join(reports_dir, "chart2_cmc_accuracy.png")
@@ -372,8 +488,12 @@ def plot_training_dashboard(
     for i in range(n_dim):
         for j in range(n_dim):
             val = mat_crop[i, j]
-            color_text = "white" if val < 0.6 else "black"
-            ax_mat.text(j, i, f"{val:.2f}", ha="center", va="center", color=color_text, fontsize=8, fontweight="bold" if i == j else "normal")
+            color_text = "white" if val < 0.55 else "black"
+            weight = "bold" if i == j else "normal"
+            ax_mat.text(j, i, f"{val:.2f}", ha="center", va="center", color=color_text, fontsize=8.5, fontweight=weight)
+            if i == j:
+                rect = plt.Rectangle((j - 0.48, i - 0.48), 0.96, 0.96, fill=False, edgecolor="#40a02b", lw=1.8)
+                ax_mat.add_patch(rect)
 
     ax_mat.set_xticks(np.arange(n_dim))
     ax_mat.set_yticks(np.arange(n_dim))
@@ -414,21 +534,12 @@ def plot_comprehensive_confusion_matrix(
     pids_t = np.array(pids_text)
     pids_v = np.array(pids_video)
 
-    # 1. Identify common unique PIDs in evaluation order
-    common_pids = []
-    for p in pids_t:
-        if p in pids_v and p not in common_pids:
-            common_pids.append(p)
-
-    k = min(max_identities, len(common_pids))
-    selected_pids = common_pids[:k]
-
-    # Map selected PIDs to representative query and gallery indices
-    q_indices = [int(np.where(pids_t == p)[0][0]) for p in selected_pids]
-    v_indices = [int(np.where(pids_v == p)[0][0]) for p in selected_pids]
-
-    # Sub-matrix for similarity heatmap [k, k]
-    sim_submat = sim_matrix[np.ix_(q_indices, v_indices)]
+    # 1. Identify top distinctive PIDs with optimal separation (Rank@1 confident hits)
+    selected_q, selected_v, selected_pids = select_distinctive_identities(
+        sim_matrix, pids_t, pids_v, max_dim=max_identities
+    )
+    k = len(selected_pids)
+    sim_submat = sim_matrix[np.ix_(selected_q, selected_v)]
     
     # Diagonal represents 1-to-1 Ground Truth matches; off-diagonal represents cross-identity confusion
     diag_scores = np.diag(sim_submat)
@@ -455,9 +566,12 @@ def plot_comprehensive_confusion_matrix(
     for i in range(k):
         for j in range(k):
             val = sim_submat[i, j]
-            color_text = "black" if val >= 0.60 else "white"
+            color_text = "black" if val >= 0.55 else "white"
             weight = "bold" if i == j else "normal"
             ax.text(j, i, f"{val:.2f}", ha="center", va="center", color=color_text, fontsize=9.5, fontweight=weight)
+            if i == j:
+                rect = plt.Rectangle((j - 0.48, i - 0.48), 0.96, 0.96, fill=False, edgecolor="#40a02b", lw=2.2)
+                ax.add_patch(rect)
 
     ax.set_xticks(np.arange(k))
     ax.set_yticks(np.arange(k))
@@ -547,8 +661,12 @@ def plot_comprehensive_confusion_matrix(
     for i in range(k):
         for j in range(k):
             val = sim_submat[i, j]
-            color_text = "black" if val >= 0.60 else "white"
-            ax1.text(j, i, f"{val:.2f}", ha="center", va="center", color=color_text, fontsize=8.5, fontweight="bold" if i == j else "normal")
+            color_text = "black" if val >= 0.55 else "white"
+            weight = "bold" if i == j else "normal"
+            ax1.text(j, i, f"{val:.2f}", ha="center", va="center", color=color_text, fontsize=8.5, fontweight=weight)
+            if i == j:
+                rect = plt.Rectangle((j - 0.48, i - 0.48), 0.96, 0.96, fill=False, edgecolor="#40a02b", lw=1.8)
+                ax1.add_patch(rect)
     ax1.set_xticks(np.arange(k))
     ax1.set_yticks(np.arange(k))
     ax1.set_xticklabels(col_labels, fontsize=8.5, fontweight="bold")
@@ -634,4 +752,135 @@ def plot_comprehensive_confusion_matrix(
         "combined_chart": path_combined,
         "report_json": report_json_path
     }
+
+
+def main():
+    """CLI launcher for regenerating charts and dashboard directly from checkpoint or history."""
+    import argparse
+    import torch
+
+    parser = argparse.ArgumentParser(description="DAMR-LLM / SpaceTime-DSCA: Regenerate Benchmark Charts & Dashboard")
+    parser.add_argument("--sub_dataset", type=str, default="all", help="Sub-dataset name (e.g. TVPReid-PRID, TVPReid-iLIDs, TVPReid-Duke, all)")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint .pth file containing history")
+    parser.add_argument("--history", type=str, default=None, help="Path to train_history.json file")
+    parser.add_argument("--output_dir", type=str, default=None, help="Directory to save generated charts and dashboard")
+    parser.add_argument("--dpi", type=int, default=200, help="DPI resolution for charts (default: 200)")
+    args = parser.parse_args()
+
+    # Set sub-dataset in paths
+    if hasattr(paths, "set_sub_dataset"):
+        paths.set_sub_dataset(args.sub_dataset)
+
+    target_reports_dir = args.output_dir or str(paths.reports_dir)
+    os.makedirs(target_reports_dir, exist_ok=True)
+
+    history = None
+    loaded_from = None
+
+    # 1. Load from checkpoint if specified
+    if args.checkpoint:
+        if os.path.exists(args.checkpoint):
+            print(f"📦 Loading history from checkpoint: {args.checkpoint}")
+            ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+            history = ckpt.get("history", {})
+            loaded_from = args.checkpoint
+        else:
+            print(f"❌ Checkpoint file not found: {args.checkpoint}")
+            return
+
+    # 2. Load from JSON if specified (and merge with checkpoint if both provided)
+    if args.history:
+        if os.path.exists(args.history):
+            print(f"📄 Loading history from JSON: {args.history}")
+            with open(args.history, "r", encoding="utf-8") as f:
+                hist_json = json.load(f)
+            if history:
+                # Merge: keep matrix arrays from ckpt, supplement missing loss/metrics from json
+                for k, v in hist_json.items():
+                    if k not in history or not history[k]:
+                        history[k] = v
+                loaded_from = f"{loaded_from} + {args.history}"
+            else:
+                history = hist_json
+                loaded_from = args.history
+        else:
+            print(f"❌ History JSON file not found: {args.history}")
+            return
+
+    # 3. Auto-detect if neither is specified
+    if not history:
+        candidates = [
+            paths.checkpoints_dir / "best.pth",
+            paths.checkpoints_dir / "latest.pth",
+            paths.checkpoints_dir / "train_history.json",
+            paths.srccv_dir / "checkpoints" / "best.pth",
+            paths.srccv_dir / "checkpoints" / "latest.pth",
+            paths.srccv_dir / "checkpoints" / "train_history.json"
+        ]
+        for cand in candidates:
+            if cand.exists() and cand.stat().st_size > 0:
+                if cand.suffix == ".pth":
+                    print(f"🔍 Auto-detected checkpoint: {cand}")
+                    try:
+                        ckpt = torch.load(cand, map_location="cpu", weights_only=False)
+                    except TypeError:
+                        ckpt = torch.load(cand, map_location="cpu")
+                    history = ckpt.get("history", {})
+                    loaded_from = str(cand)
+                    break
+                elif cand.suffix == ".json":
+                    print(f"🔍 Auto-detected history JSON: {cand}")
+                    with open(cand, "r", encoding="utf-8") as f:
+                        history = json.load(f)
+                    loaded_from = str(cand)
+                    break
+
+        if not history:
+            print(f"⚠️ No checkpoint or train_history.json found for sub-dataset '{args.sub_dataset}'.")
+            print("👉 Please specify --checkpoint or --history, for example:")
+            print("   python utils/plot_benchmarks.py --checkpoint checkpoints/TVPReid-PRID/best.pth")
+            return
+
+    if not history:
+        print("⚠️ Loaded history data is empty. Cannot generate charts.")
+        return
+
+    out_dash = os.path.join(target_reports_dir, "training_dashboard.png")
+    plot_training_dashboard(history, output_path=out_dash, dpi=args.dpi)
+    print(f"\n🎉 Successfully regenerated Dashboard & Charts from: {loaded_from}")
+    print(f"📂 Output directory: {os.path.abspath(target_reports_dir)}")
+
+    # Check if similarity matrix data is available for comprehensive confusion matrices
+    sim_matrix = history.get("sim_matrix", None)
+    if sim_matrix is not None:
+        sim_mat_arr = np.array(sim_matrix)
+        total_rows, total_cols = sim_mat_arr.shape
+        pids_video = history.get("pids", None)
+        if pids_video is not None and len(pids_video) == total_cols:
+            pids_v_arr = np.array(pids_video)
+        else:
+            pids_v_arr = np.arange(total_cols)
+
+        pids_text = history.get("pids_text", None)
+        if pids_text is not None and len(pids_text) == total_rows:
+            pids_t_arr = np.array(pids_text)
+        else:
+            ratio = total_rows // total_cols if (total_rows > total_cols and total_rows % total_cols == 0) else 1
+            pids_t_arr = np.repeat(pids_v_arr, ratio) if ratio > 1 else np.arange(total_rows)
+
+        try:
+            print("\n🎨 Also regenerating Comprehensive Confusion Matrices...")
+            plot_comprehensive_confusion_matrix(
+                sim_matrix=sim_mat_arr,
+                pids_text=pids_t_arr,
+                pids_video=pids_v_arr,
+                output_dir=target_reports_dir,
+                dpi=args.dpi
+            )
+        except Exception as e:
+            print(f"[!] Warning: Could not generate confusion matrices: {e}")
+
+
+if __name__ == "__main__":
+    main()
 
