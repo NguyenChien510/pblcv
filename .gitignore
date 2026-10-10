@@ -1,0 +1,42 @@
+# ==============================================================================
+# Git Ignore for SpaceTime-DAMR (srccv)
+# ==============================================================================
+
+# 1. Model Checkpoints & Weights (Prevent uploading large files >100MB to GitHub)
+checkpoints/
+*.pth
+*.pt
+*.bin
+*.ckpt
+*.tar
+*.onnx
+
+# 2. Web Demo Outputs & Temporary Uploads
+uploads/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# 3. Python Caches & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# 4. Jupyter Notebook Checkpoints
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# 5. Environment & Virtualenv
+env/
+venv/
+.env
+
+# 6. IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
