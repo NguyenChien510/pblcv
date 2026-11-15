@@ -7,7 +7,9 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const SOFTMAX_TAU = 0.07;
 const NEUTRAL = "#94a3b8";
 const DARK_TEXT_RANKS = new Set([1, 2, 3, 7, 8, 9]);
-const STAGE_ORDER = ["prepare", "detect", "crops", "clip", "encode", "stitch"];
+// Fixed analysis settings (no UI): whole video, Accurate mode (every frame, imgsz 960), detection threshold 0.35
+const ANALYZE_FIXED = { max_frames: 0, stride: 1, conf: 0.35 };
+const STAGE_ORDER = ["prepare", "detect", "crops", "encode", "stitch"];
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("ps." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -26,7 +28,6 @@ const S = {
   topK: store.get("topK", 5),
   showAll: store.get("showAll", false),
   attrFilter: store.get("attrFilter", store.get("genderFilter", false)),
-  stride: store.get("stride", 1),
   selected: null,
   hidden: new Set(),
   jobs: { analyze: null, render: null },
@@ -67,14 +68,9 @@ function setPressed(container, attr, value) {
 }
 
 // ======================================================================== ranking (mirrors SearchEngine.rank)
-/** Score branches in use: joint/app/mot, plus clip when the server has CLIP. */
-function weightKeys() {
-  return Object.keys(S.defaults).filter((k) => k !== "clip" || S.status?.clip);
-}
-
 function normWeights() {
   const w = S.weights;
-  const keys = weightKeys();
+  const keys = Object.keys(S.defaults);   // joint/app/mot; CLIP is a hidden branch with a fixed weight
   const sum = keys.reduce((a, k) => a + Math.max(0, w[k] ?? 0), 0) || 1;
   return Object.fromEntries(keys.map((k) => [k, Math.max(0, w[k] ?? 0) / sum]));
 }
@@ -85,9 +81,10 @@ function rerank() {
   let scores = S.search.scores;
   if (S.attrFilter && S.search.constraints?.length) scores = scores.filter((s) => s.attr_min == null || s.attr_min >= 0.5);
   if (!scores.length) { S.ranked = []; refresh(); return; }
+  const cw = scores[0].clip != null ? S.status?.clip_weight ?? 0 : 0;   // absent when CLIP is not loaded
   const ranked = scores.map((s) => ({
     ...s,
-    fused: Object.keys(w).reduce((a, k) => a + w[k] * (s[k] ?? 0), 0) - (s.penalty ?? 0),
+    fused: (Object.keys(w).reduce((a, k) => a + w[k] * (s[k] ?? 0), 0) + cw * (s.clip ?? 0)) / (1 + cw) - (s.penalty ?? 0),
   }));
   ranked.sort((a, b) => b.fused - a.fused);
   const m = ranked[0].fused;
@@ -104,10 +101,10 @@ async function loadStatus() {
   S.status = st;
   S.palette = st.palette;
   S.defaults = st.default_weights;
-  S.weights = { ...S.defaults, ...(S.weights || {}) };   // older saved weights lack newer branches
-  $("w-clip-row").hidden = !st.clip;
-  $("stage-clip").hidden = !st.clip;
-  document.querySelector('.wbar [data-wb="clip"]').hidden = !st.clip;
+  // Saved weights follow the defaults they were made from; new defaults replace them
+  const base = JSON.stringify(S.defaults);
+  if (store.get("weightsBase", null) !== base) { S.weights = null; store.set("weightsBase", base); store.set("weights", null); }
+  S.weights = Object.fromEntries(Object.keys(S.defaults).map((k) => [k, S.weights?.[k] ?? S.defaults[k]]));
   renderWeights();
 
   const sel = $("ckpt-select");
@@ -255,14 +252,14 @@ function renderVideoMeta() {
 
 // ======================================================================== step 2: analyse
 function analyzeParams() {
-  return { max_frames: Number($("max-frames").value), stride: S.stride, conf: Number($("conf").value) };
+  return { ...ANALYZE_FIXED };
 }
 
 function updateFramesNote() {
   const note = $("frames-note");
   const info = S.video?.info;
   if (!info) { note.hidden = true; return; }
-  const n = Number($("max-frames").value);
+  const n = ANALYZE_FIXED.max_frames;
   note.hidden = false;
   const partial = n && n < info.frames;
   note.classList.toggle("warn", !!partial);
@@ -271,15 +268,6 @@ function updateFramesNote() {
     : t("frames_note_all", { total: info.frames, dur: fmtClock(info.duration) });
 }
 
-$("stride-seg").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-stride]");
-  if (!b) return;
-  S.stride = Number(b.dataset.stride);
-  store.set("stride", S.stride);
-  setPressed($("stride-seg"), "data-stride", S.stride);
-});
-$("conf").addEventListener("input", (e) => { $("conf-val").textContent = Number(e.target.value).toFixed(2); });
-$("max-frames").addEventListener("change", updateFramesNote);
 
 $("analyze-btn").addEventListener("click", analyze);
 $("analyze-cancel").addEventListener("click", () => { if (S.jobs.analyze) post(`/api/jobs/${S.jobs.analyze}/cancel`).catch(() => {}); });
@@ -321,7 +309,7 @@ async function analyze() {
 }
 
 function setStage(stage, p) {
-  const idx = STAGE_ORDER.indexOf(stage);
+  const idx = STAGE_ORDER.indexOf(stage === "clip" ? "crops" : stage);   // CLIP encoding runs silently inside "crops"
   $("stages").querySelectorAll("li").forEach((li, i) => {
     li.classList.toggle("done", idx > i);
     li.classList.toggle("active", idx === i);
@@ -373,6 +361,7 @@ async function runSearch() {
     if (seq !== S.searchSeq) return;
     S.search = res;
     renderDsca();
+    renderWeights();
     rerank();
     if (S.ranked[0]) follow(S.ranked[0].track_id);
   } catch (err) {
@@ -501,8 +490,8 @@ function follow(id) {
   player.video.play().catch(() => {});
 }
 
-function select(id, { seek = true, scrollCard = true } = {}) {
-  S.selected = S.selected === id ? null : id;
+function select(id, { seek = true, scrollCard = true, toggle = true } = {}) {
+  S.selected = toggle && S.selected === id ? null : id;
   if (S.selected != null && seek) {
     const tr = trackById(id);
     if (tr) { player.video.pause(); player.seekFrame(tr.start); }
@@ -587,7 +576,7 @@ function renderResults() {
   $("cand-count").textContent = searched ? `${Math.min(S.topK, S.ranked.length)} / ${S.ranked.length}` : `${items.length}`;
 
   const ranges = {};
-  const barKeys = ["joint", "app", "mot", ...(S.ranked[0]?.clip != null ? ["clip"] : [])];
+  const barKeys = ["joint", "app", "mot"];
   if (searched) for (const k of barKeys) {
     const vals = S.ranked.map((s) => s[k]);
     ranges[k] = [Math.min(...vals), Math.max(...vals)];
@@ -734,10 +723,7 @@ function updateSteps() {
   if (S.jobs.analyze) setCollapsed("step-analyze", false);
 
   if (analysed) {
-    const p = S.analysis.params;
-    $("as-main").textContent = t("as_main", {
-      mode: t(`speed_${p.stride}`), n: S.analysis.frames_processed, conf: Number(p.conf).toFixed(2),
-    });
+    $("as-main").textContent = t("as_main", { n: S.analysis.frames_processed });
     $("as-sub").textContent = t("as_sub", { persons: S.analysis.tracks.length });
   }
   $("analyze-btn").querySelector("span").textContent = t(analysed ? "reanalyze" : "analyze");
@@ -774,7 +760,6 @@ document.addEventListener("keydown", (e) => {
 // ======================================================================== boot
 (async function init() {
   applyI18n();
-  setPressed($("stride-seg"), "data-stride", S.stride);
   $("prompt").value = store.get("prompt", "");
   autoGrow();
   try {

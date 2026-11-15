@@ -114,27 +114,6 @@
         </header>
 
         <div class="step-body">
-          <div class="opt-grid">
-            <span class="label" data-i18n="speed">Chế độ</span>
-            <span class="label" data-i18n="frames">Số frame</span>
-            <div class="seg seg-sm seg-full" id="stride-seg" role="radiogroup">
-              <button type="button" data-stride="1" data-i18n="speed_1">Chính xác</button>
-              <button type="button" data-stride="2" data-i18n="speed_2">Cân bằng</button>
-              <button type="button" data-stride="3" data-i18n="speed_3">Nhanh</button>
-            </div>
-            <select id="max-frames" class="select-sm">
-              <option value="150">150</option>
-              <option value="300" selected>300</option>
-              <option value="600">600</option>
-              <option value="1200">1200</option>
-              <option value="0" data-i18n="frames_all">Toàn bộ</option>
-            </select>
-          </div>
-          <label class="inline-range">
-            <span class="label" data-i18n="conf">Ngưỡng phát hiện</span>
-            <input type="range" id="conf" min="0.15" max="0.8" step="0.05" value="0.35">
-            <b id="conf-val" class="mono">0.35</b>
-          </label>
           <p class="note" id="frames-note" hidden></p>
 
           <button type="button" class="btn btn-primary btn-block btn-md" id="analyze-btn">
@@ -147,7 +126,6 @@
             <li data-stage="prepare"><i></i><span data-i18n="st_prepare">Chuẩn bị video</span></li>
             <li data-stage="detect"><i></i><span data-i18n="st_detect">Phát hiện &amp; theo vết</span></li>
             <li data-stage="crops"><i></i><span data-i18n="st_crops">Trích xuất ảnh người</span></li>
-            <li data-stage="clip" id="stage-clip" hidden><i></i><span data-i18n="st_clip">Mã hóa CLIP</span></li>
             <li data-stage="encode"><i></i><span data-i18n="st_encode">Mã hóa SpaceTimeViT</span></li>
             <li data-stage="stitch"><i></i><span data-i18n="st_stitch">Nối lại người bị mất dấu (re-ID)</span></li>
           </ol>
@@ -264,7 +242,7 @@
             <button type="button" class="btn btn-ghost btn-sm" id="weights-btn" aria-expanded="false" aria-controls="weights-pop">
               <svg><use href="#i-sliders"/></svg>
               <span data-i18n="weights">Trọng số</span>
-              <span class="wbar" aria-hidden="true"><i data-wb="joint"></i><i data-wb="app"></i><i data-wb="mot"></i><i data-wb="clip"></i></span>
+              <span class="wbar" aria-hidden="true"><i data-wb="joint"></i><i data-wb="app"></i><i data-wb="mot"></i></span>
               <span class="mono wtext" id="wtext"></span>
               <svg class="chev"><use href="#i-chevron"/></svg>
             </button>
@@ -290,11 +268,6 @@
                   <span><b>mot</b> <small data-i18n="w_mot">chuyển động</small></span>
                   <input type="range" min="0" max="1" step="0.05" data-w="mot">
                   <output data-wv="mot"></output>
-                </label>
-                <label class="weight" style="--w: var(--c-clip)" id="w-clip-row" hidden>
-                  <span><b>clip</b> <small data-i18n="w_clip">CLIP ViT-B/16</small></span>
-                  <input type="range" min="0" max="1" step="0.05" data-w="clip">
-                  <output data-wv="clip"></output>
                 </label>
               </div>
               <button type="button" class="btn btn-ghost btn-sm" id="weights-reset">

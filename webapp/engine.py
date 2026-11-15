@@ -28,13 +28,21 @@ from models.damr_main import DAMRModel
 
 ProgressCb = Callable[[str, float, float], None]
 
-DEFAULT_WEIGHTS = {"joint": 0.30, "app": 0.20, "mot": 0.05, "clip": 0.45}
-DSCA_WEIGHTS = {"joint": 0.50, "app": 0.35, "mot": 0.15}   # defaults when CLIP is unavailable (= train.py::evaluate)
+DEFAULT_WEIGHTS = {"joint": 0.45, "app": 0.45, "mot": 0.09}   # the three DSCA branches; the UI tunes only these
+CLIP_WEIGHT = 0.2           # hidden CLIP branch: fused = (DSCA + CLIP_WEIGHT * clip) / (1 + CLIP_WEIGHT), not user-tunable
 CLIP_MODEL = "openai/clip-vit-base-patch16"
 CLIP_CROPS = 3              # preview crops per track (thumb + first/last film crop); ~165 ms each on CPU
 CLIP_BATCH = 16
 CLIP_PREFIX = "a photo of "
+# Loaded at startup when present: recipe m3c joint model (MFGF backbones, trained on the train splits of all three
+# TVPReid subsets after CUHK-PEDES text-image pre-training). On the three test splits it retrieves far better than
+# the per-subset SpaceTimeViT checkpoints, which barely transfer between subsets.
+PREFERRED_CHECKPOINT = "m3c_joint_seed42.pth"
 NUM_TRACK_FRAMES = 16
+MFGF_VISUAL_FRAMES = 4      # backbone "mfgf": 4 discrete frames for the Space-Time ViT ...
+MFGF_MOTION_FRAMES = 16     # ... followed by 16 consecutive frames for S3D (data/dataset.py, frame_layout="mfgf")
+MFGF_MOTION_FPS = 15.0      # frame rate of the TVPReid tracklets the motion encoder was trained on
+PREVIEW_SLOTS = (0, 5, 8, 10, 15)   # of the 16 uniform picks: film crops, with slot 8 as the thumbnail
 CROP_SIZE = 224
 ENCODE_BATCH = 4
 SOFTMAX_TAU = 0.07          # same temperature as the InfoNCE training loss
@@ -70,18 +78,20 @@ MALE_WORDS = {"man", "men", "male", "males", "guy", "guys", "boy", "boys", "gent
 FEMALE_WORDS = {"woman", "women", "female", "females", "lady", "ladies", "girl", "girls", "she", "her", "hers"}
 POSE_MODEL = "yolov8n-pose.pt"  # shoulders/hips/knees locate the top & bottom garment inside each crop
 
-# Query constraints matched against the attribute model; fused -= weight * (1 - p_match). Gender 0.3 put 42/48
-# top-8 results on the right gender in tests; the others are smaller because those attributes are less reliable.
-CONSTRAINT_WEIGHTS = {"gender": 0.30, "top_color": 0.25, "bottom_color": 0.20, "backpack": 0.15, "bag": 0.10,
-                      "hat": 0.15, "coat": 0.10, "longsleeves": 0.10, "longpants": 0.10, "longhair": 0.15}
-LOOSE_COLOR_WEIGHT = 0.15   # "a man in red" (color without a garment) -> top_color with this weight
-ATTR_PATTERNS = {           # key -> (regex meaning "yes", regex meaning "no")
+# Query constraints matched against the attribute model; fused -= weight * (1 - p_match). The weights are small on
+# purpose: on TVPReid test tracklets these attributes separate the described person only weakly (ranking AUC
+# 0.6-0.7), and with the m3c joint checkpoint weights 3x larger cost 13 points of R@1 (60 -> 47, mean of the three
+# subsets), while this scale is neutral there and still reorders close calls. "coat" (p ~0.1 for everyone) and
+# "wears long pants" (AUC 0.52) carried no signal and are not used as constraints.
+CONSTRAINT_WEIGHTS = {"gender": 0.09, "top_color": 0.08, "bottom_color": 0.06, "backpack": 0.05, "bag": 0.03,
+                      "hat": 0.05, "longsleeves": 0.03, "longpants": 0.03, "longhair": 0.05}
+LOOSE_COLOR_WEIGHT = 0.05   # "a man in red" (color without a garment) -> top_color with this weight
+ATTR_PATTERNS = {           # key -> (regex meaning "yes" or None, regex meaning "no" or None)
     "backpack": (r"\b(backpacks?|rucksacks?)\b", None),
     "bag": (r"\b(bags?|handbags?|purses?|totes?)\b", None),
     "hat": (r"\b(hats?|caps?|beanies?|helmets?)\b", None),
-    "coat": (r"\b(coats?|jackets?|overcoats?|parkas?|blazers?)\b", None),
     "longsleeves": (r"\blong[- ]?sleeve[ds]?\b", r"\b(short[- ]?sleeve[ds]?|sleeveless|t-?shirts?|tees?|tank tops?)\b"),
-    "longpants": (r"\b(pants|trousers|jeans|leggings|sweatpants)\b", r"\bshorts\b"),
+    "longpants": (None, r"\bshorts\b"),
     "longhair": (r"\b(long[- ]hair(ed)?|ponytail)\b", r"\b(short[- ]hair(ed)?|bald)\b"),
 }
 TOP_GARMENTS = {"shirt", "shirts", "t-shirt", "tshirt", "tee", "top", "jacket", "coat", "sweater", "hoodie", "blouse",
@@ -278,7 +288,7 @@ def query_attributes(prompt: str) -> List[Dict[str, Any]]:
         out.append({"key": "bottom_color", "value": sorted(set(bottom_c)), "weight": CONSTRAINT_WEIGHTS["bottom_color"]})
 
     for key, (yes, no) in ATTR_PATTERNS.items():
-        if re.search(yes, text):
+        if yes and re.search(yes, text):
             out.append({"key": key, "value": True, "weight": CONSTRAINT_WEIGHTS[key]})
         elif no and re.search(no, text):
             out.append({"key": key, "value": False, "weight": CONSTRAINT_WEIGHTS[key]})
@@ -348,6 +358,8 @@ class Analysis:
     emb: Dict[str, torch.Tensor] = field(default_factory=dict)  # V_app/V_mot/V_video [N, D], L2-normalised
     track_order: List[int] = field(default_factory=list)          # row order of emb
     track_emb: Dict[int, Dict[str, torch.Tensor]] = field(default_factory=dict)  # per-track V_* rows
+    video_path: Optional[Path] = None    # proxy video, re-read when a checkpoint needs another clip layout
+    layout: str = "uniform"              # frame layout of Track.clip ("uniform" or "mfgf")
     stitch_log: List[Dict[str, Any]] = field(default_factory=list)  # re-ID merges (for inspection)
 
 
@@ -363,20 +375,17 @@ class SearchEngine:
         self.checkpoint_info: Dict[str, Any] = {"loaded": False, "name": None}
         print(f"[*] SearchEngine on device: {self.device}")
 
-        # ImageNet ViT weights are fully overwritten by any checkpoint, so skip downloading them then
-        self.model = DAMRModel(
-            embed_dim=768,
-            text_model_name="bert-base-uncased",
-            motion_frame_num=NUM_TRACK_FRAMES,
-            vit_depth=6,
-            vit_heads=12,
-            drop_rate=0.0,
-            pretrained_vit=not self.scan_checkpoints(),
-        ).to(self.device).eval()
+        # The architecture follows the checkpoint (config stored inside it); without any checkpoint the
+        # original SpaceTimeViT is built with ImageNet weights.
+        self.model: Optional[DAMRModel] = None
+        self.arch_key: Tuple = ()
+        self.frame_layout = "uniform"
+        self._load_default_checkpoint()
+        if self.model is None:
+            self.model, self.arch_key = self._build_model({}, pretrained_vit=True), self._arch_key({})
         if getattr(self.model.text_encoder, "fallback", False):
             print("[!] WARNING: bert-base-uncased could not be loaded; the text encoder fell back to an "
                   "untrained model and checkpoints will not match. Check HF_HOME / network access.")
-        self._load_default_checkpoint()
         self._init_detector()
         self._init_attr_model()
         self._init_clip(use_clip)
@@ -397,6 +406,8 @@ class SearchEngine:
     def _load_default_checkpoint(self) -> None:
         def priority(c: Dict[str, Any]) -> int:
             name = Path(c["name"]).name.lower()
+            if c["name"] == PREFERRED_CHECKPOINT:
+                return -1
             if name == "best_weights.pth":
                 return 0
             if "best" in name:
@@ -413,8 +424,34 @@ class SearchEngine:
                 print(f"[!] Skipping checkpoint {c['name']}: {e}")
         print("[!] No usable checkpoint in checkpoints/. Using ImageNet ViT + BERT initial weights.")
 
+    @staticmethod
+    def _arch_key(mcfg: Dict[str, Any]) -> Tuple:
+        return (mcfg.get("backbone", "spacetime") or "spacetime", int(mcfg.get("embed_dim", 768)),
+                int(mcfg.get("vit_depth", 6)), int(mcfg.get("vit_heads", 12)),
+                bool(mcfg.get("use_temporal_attn", True)), bool(mcfg.get("s3d_motion", False)))
+
+    def _build_model(self, mcfg: Dict[str, Any], pretrained_vit: bool = False) -> DAMRModel:
+        """DAMRModel with the architecture of a checkpoint config (same fields as experiments/common.load_model)."""
+        backbone, embed_dim, depth, heads, temporal, s3d = self._arch_key(mcfg)
+        return DAMRModel(
+            embed_dim=embed_dim,
+            text_model_name=mcfg.get("text_model_name", "bert-base-uncased"),
+            motion_frame_num=NUM_TRACK_FRAMES,
+            vit_depth=depth,
+            vit_heads=heads,
+            drop_rate=0.0,
+            pretrained_vit=pretrained_vit,     # backbone weights are fully overwritten by a checkpoint
+            use_temporal_attn=temporal,
+            s3d_motion=s3d,
+            backbone=backbone,
+        ).to(self.device).eval()
+
     def load_checkpoint(self, name: str) -> Dict[str, Any]:
-        """Loads checkpoints/<name>. Rejects paths outside checkpoints/ and partial matches."""
+        """
+        Loads checkpoints/<name>, rebuilding the model when the checkpoint was trained with another architecture
+        (backbone "spacetime" or "mfgf"). Rejects paths outside checkpoints/ and partial matches; on failure the
+        current model stays active.
+        """
         base = self.checkpoints_dir.resolve()
         cp = (base / name).resolve()
         if base not in cp.parents or not cp.is_file():
@@ -422,23 +459,34 @@ class SearchEngine:
 
         ckpt = torch.load(cp, map_location="cpu", weights_only=False)
         state = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+        cfg = (ckpt.get("config") or {}) if isinstance(ckpt, dict) else {}
+        mcfg = dict(cfg.get("model") or {})
+        if any(k.startswith("video_encoder.vit.") for k in state):   # weights-only files carry no config
+            mcfg["backbone"] = "mfgf"
+        arch = self._arch_key(mcfg)
+        model = self.model if self.model is not None and arch == self.arch_key else self._build_model(mcfg)
+        model_state = model.state_dict()
+        matched = {k: v for k, v in state.items() if k in model_state and v.shape == model_state[k].shape}
+        if len(matched) < len(model_state):
+            raise ValueError(f"Architecture mismatch: {len(matched)}/{len(model_state)} layers match")
+        dsca_mode = mcfg.get("dsca_mode", "keyword") or "keyword"
         with self.model_lock:
-            model_state = self.model.state_dict()
-            matched = {k: v for k, v in state.items() if k in model_state and v.shape == model_state[k].shape}
-            if len(matched) < len(model_state):
-                raise ValueError(
-                    f"Architecture mismatch: {len(matched)}/{len(model_state)} layers match"
-                )
-            self.model.load_state_dict(matched)
+            model.load_state_dict(matched)
+            self.model, self.arch_key = model, arch
+            self.frame_layout = "mfgf" if arch[0] == "mfgf" else "uniform"
+            if dsca_mode != self.decomposer.mode:      # sub-prompts must be built the way the checkpoint was trained
+                self.decomposer = TextDecomposer(language="en", mode=dsca_mode)
 
         metrics = ckpt.get("metrics", {}) if isinstance(ckpt, dict) else {}
-        cfg = ckpt.get("config", {}) if isinstance(ckpt, dict) else {}
         self.checkpoint_info = {
             "loaded": True,
             "name": str(cp.relative_to(base)),
+            "backbone": arch[0],
+            "dsca_mode": dsca_mode,
             "layers": len(matched),
             "epoch": ckpt.get("epoch") if isinstance(ckpt, dict) else None,
-            "sub_dataset": (cfg.get("data") or {}).get("sub_dataset"),
+            # joint runs train on all three subsets, but their config keeps the name of one of them
+            "sub_dataset": "all" if "joint" in cp.name else (cfg.get("data") or {}).get("sub_dataset"),
             "metrics": {k: round(float(v), 2) for k, v in metrics.items() if isinstance(v, (int, float))},
         }
         print(f"[+] Loaded checkpoint {self.checkpoint_info['name']} ({len(matched)} layers, "
@@ -591,7 +639,7 @@ class SearchEngine:
 
     @property
     def default_weights(self) -> Dict[str, float]:
-        return dict(DEFAULT_WEIGHTS) if self.clip_model is not None else dict(DSCA_WEIGHTS)
+        return dict(DEFAULT_WEIGHTS)
 
     @staticmethod
     def _letterbox(img_bgr: np.ndarray) -> np.ndarray:
@@ -732,12 +780,14 @@ class SearchEngine:
         analysis = Analysis(
             id=analysis_id, video_id=video_id, params=params, fps=float(fps), width=width, height=height,
             frames_processed=frames_processed, frames_total=total or frames_processed, tracks=tracks,
+            video_path=Path(video_path), layout=self.frame_layout,
         )
         if tracks:
             self._extract_crops(video_path, analysis, list(tracks), progress)
             self._attributes(analysis, list(tracks))
             self._reid(analysis, list(tracks))
-            self._clip_embed(analysis, list(tracks), progress)
+            if params.get("clip", True):
+                self._clip_embed(analysis, list(tracks), progress)
             self.encode_tracks(analysis, progress=progress)
             self._stitch(video_path, analysis, progress)
         return analysis
@@ -885,23 +935,58 @@ class SearchEngine:
                 progress("detect", idx, n_frames)
         return tracks, idx
 
-    def _pick_clip_frames(self, t: Track) -> List[int]:
-        """16 frames spread over the track; in each time bin take the best-quality (least occluded) detection."""
+    @staticmethod
+    def _pick_spread(t: Track, n: int) -> List[int]:
+        """n frames spread over the track; in each time bin take the best-quality (least occluded) detection."""
         dets = t.det_frames
-        if len(dets) <= NUM_TRACK_FRAMES:
-            return [dets[i] for i in np.linspace(0, len(dets) - 1, NUM_TRACK_FRAMES).round().astype(int)]
-        bins = np.array_split(np.array(dets), NUM_TRACK_FRAMES)
+        if len(dets) <= n:
+            return [dets[i] for i in np.linspace(0, len(dets) - 1, n).round().astype(int)]
+        bins = np.array_split(np.array(dets), n)
         return [int(max(b, key=lambda f: t.quality.get(int(f), 0.0))) for b in bins]
 
-    def _extract_crops(self, video_path: Path, analysis: Analysis, tids: List[int], progress: ProgressCb) -> None:
-        """Pass 2: re-reads only the frames needed for the given tracks' 16-frame clips and previews."""
-        wanted: Dict[int, List[Tuple[int, int]]] = {}  # frame -> [(track_id, slot)]
+    def _pick_clip_frames(self, t: Track, fps: float) -> List[int]:
+        """
+        Frames of the model input clip. "uniform": 16 frames spread over the track. "mfgf": 4 spread frames, then
+        16 consecutive frames at about the tracklet frame rate of the training data, taken from the stretch of
+        the track with the best mean crop quality (boxes interpolated across short gaps count as present).
+        """
+        if self.frame_layout != "mfgf":
+            return self._pick_spread(t, NUM_TRACK_FRAMES)
+        visual = self._pick_spread(t, MFGF_VISUAL_FRAMES)
+        step = max(1, int(round(fps / MFGF_MOTION_FPS)))
+        dets = np.array(t.det_frames)
+        q = np.array([t.quality.get(int(f), 0.0) for f in dets])
+        csum = np.concatenate([[0.0], np.cumsum(q)])
+        span = step * (MFGF_MOTION_FRAMES - 1)
+        best, best_q = None, -1.0
+        for i, f0 in enumerate(dets):
+            if f0 + span > dets[-1]:
+                break
+            j = int(np.searchsorted(dets, f0 + span, side="right"))
+            mean_q = (csum[j] - csum[i]) / (j - i)
+            if mean_q > best_q and all(int(f0 + step * k) in t.boxes for k in range(MFGF_MOTION_FRAMES)):
+                best, best_q = int(f0), mean_q
+        if best is None:        # track shorter than the window (or broken by long gaps): spread over what exists
+            frames = sorted(t.boxes)
+            motion = [frames[i] for i in np.linspace(0, len(frames) - 1, MFGF_MOTION_FRAMES).round().astype(int)]
+        else:
+            motion = [best + step * k for k in range(MFGF_MOTION_FRAMES)]
+        return visual + motion
+
+    def _extract_crops(self, video_path: Path, analysis: Analysis, tids: List[int], progress: ProgressCb,
+                       previews: bool = True) -> None:
+        """Pass 2: re-reads only the frames needed for the given tracks' model clips and preview crops."""
+        wanted: Dict[int, List[Tuple[int, int, bool]]] = {}  # frame -> [(track_id, slot, is_preview)]
         for tid in tids:
             t = analysis.tracks[tid]
-            t.clip = np.zeros((NUM_TRACK_FRAMES, CROP_SIZE, CROP_SIZE, 3), dtype=np.uint8)
-            for slot, f in enumerate(self._pick_clip_frames(t)):
-                wanted.setdefault(f, []).append((tid, slot))
-        film_slots = {0, 5, 10, 15}
+            picks = self._pick_clip_frames(t, analysis.fps)
+            t.clip = np.zeros((len(picks), CROP_SIZE, CROP_SIZE, 3), dtype=np.uint8)
+            for slot, f in enumerate(picks):
+                wanted.setdefault(f, []).append((tid, slot, False))
+            if previews:
+                spread = self._pick_spread(t, NUM_TRACK_FRAMES)
+                for slot in PREVIEW_SLOTS:
+                    wanted.setdefault(spread[slot], []).append((tid, slot, True))
         thumb_slot = NUM_TRACK_FRAMES // 2
         film: Dict[int, Dict[int, bytes]] = {tid: {} for tid in tids}
 
@@ -913,24 +998,26 @@ class SearchEngine:
             ok, frame = cap.read()
             if not ok:
                 break
-            for tid, slot in wanted.get(idx, []):
+            for tid, slot, is_preview in wanted.get(idx, []):
                 t = analysis.tracks[tid]
                 x1, y1, x2, y2 = t.boxes[idx]
                 crop = frame[y1:y2, x1:x2]
                 if crop.size == 0:
                     continue
-                t.clip[slot] = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB), (CROP_SIZE, CROP_SIZE),
-                                          interpolation=cv2.INTER_LINEAR)
-                if slot == thumb_slot:
+                if not is_preview:
+                    t.clip[slot] = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB), (CROP_SIZE, CROP_SIZE),
+                                              interpolation=cv2.INTER_LINEAR)
+                elif slot == thumb_slot:
                     t.thumb = _jpeg(crop, 256)
-                if slot in film_slots:
+                else:
                     film[tid][slot] = _jpeg(crop, 256)
             idx += 1
             if idx % 10 == 0:
                 progress("crops", idx - first_needed, last_needed - first_needed + 1)
         cap.release()
-        for tid in tids:
-            analysis.tracks[tid].film = [film[tid][s] for s in sorted(film[tid])]
+        if previews:
+            for tid in tids:
+                analysis.tracks[tid].film = [film[tid][s] for s in sorted(film[tid])]
         progress("crops", 1, 1)
 
     def encode_tracks(self, analysis: Analysis, tids: Optional[List[int]] = None,
@@ -939,6 +1026,11 @@ class SearchEngine:
         if tids is None:
             tids = sorted(analysis.tracks)
             analysis.track_emb = {}
+            if tids and analysis.layout != self.frame_layout:   # the active checkpoint reads another clip layout
+                if analysis.video_path is None or not analysis.video_path.exists():
+                    raise RuntimeError("Video file is gone; analyse the video again with this checkpoint")
+                self._extract_crops(analysis.video_path, analysis, tids, lambda *a: None, previews=False)
+                analysis.layout = self.frame_layout
         for b in range(0, len(tids), ENCODE_BATCH):
             ids = tids[b:b + ENCODE_BATCH]
             clips = torch.from_numpy(np.stack([analysis.tracks[i].clip for i in ids]))  # [B,T,H,W,3]
@@ -1032,7 +1124,8 @@ class SearchEngine:
         self._extract_crops(video_path, analysis, merged, lambda *a: None)
         self._attributes(analysis, merged)
         self._reid(analysis, merged)
-        self._clip_embed(analysis, merged)
+        if analysis.params.get("clip", True):
+            self._clip_embed(analysis, merged)
         self.encode_tracks(analysis, tids=merged, progress=progress, stage="stitch")
 
         # Renumber 1..N by start time so ids read naturally in the UI
@@ -1050,7 +1143,8 @@ class SearchEngine:
     def search(self, analysis: Analysis, prompt: str) -> Dict[str, Any]:
         """Three cosine scores per track; ranking/fusion happens in the client."""
         prompt = prompt.strip()
-        concepts = self.decomposer.extract_concepts(prompt)
+        concepts = self.decomposer.extract_concepts(prompt)       # keywords shown in the UI
+        concepts["q_app"], concepts["q_mot"] = self.decomposer.decompose(prompt)   # follows the checkpoint's dsca_mode
         if analysis.tracks and analysis.ckpt_key != self.ckpt_key:
             self.encode_tracks(analysis)
 
@@ -1102,16 +1196,19 @@ class SearchEngine:
     @staticmethod
     def rank(scores: List[Dict[str, Any]], weights: Dict[str, float], attr_filter: bool = False) -> List[Dict[str, Any]]:
         """
-        Fuses the DSCA (+ CLIP) scores with normalised weights, subtracts the attribute penalty and adds softmax match
-        probability. attr_filter drops tracks failing any query constraint (p < 0.5).
+        Fuses the three DSCA scores with normalised weights, blends in the hidden CLIP score (CLIP_WEIGHT) when the
+        scores carry one, subtracts the attribute penalty and adds softmax match probability. attr_filter drops tracks
+        failing any query constraint (p < 0.5).
         Mirrored by static/js/app.js::rerank, keep the two in sync.
         """
-        keys = [k for k in DEFAULT_WEIGHTS if not scores or k in scores[0]]  # "clip" is absent without CLIP
+        keys = list(DEFAULT_WEIGHTS)
+        cw = CLIP_WEIGHT if scores and scores[0].get("clip") is not None else 0.0   # absent without CLIP
         wsum = sum(max(0.0, float(weights.get(k, 0.0))) for k in keys) or 1.0
         w = {k: max(0.0, float(weights.get(k, 0.0))) / wsum for k in keys}
         if attr_filter:
             scores = [s for s in scores if s.get("attr_min") is None or s["attr_min"] >= 0.5]
-        ranked = [dict(s, fused=sum(w[k] * s[k] for k in w) - s.get("penalty", 0.0)) for s in scores]
+        ranked = [dict(s, fused=(sum(w[k] * s[k] for k in w) + cw * (s.get("clip") or 0.0)) / (1.0 + cw)
+                       - s.get("penalty", 0.0)) for s in scores]
         ranked.sort(key=lambda s: s["fused"], reverse=True)
         if ranked:
             m = max(s["fused"] for s in ranked)

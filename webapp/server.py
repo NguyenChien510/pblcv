@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import video_io
-from .engine import DEFAULT_WEIGHTS, RANK_COLORS, TRACKER_VERSION, Analysis, SearchEngine
+from .engine import CLIP_WEIGHT, DEFAULT_WEIGHTS, RANK_COLORS, TRACKER_VERSION, Analysis, SearchEngine
 from .jobs import JobManager
 from .report import build_report
 
@@ -53,6 +53,7 @@ class AnalyzeParams(BaseModel):
     max_frames: int = Field(300, ge=0, le=20000)   # 0 = whole video
     stride: int = Field(1, ge=1, le=4)
     conf: float = Field(0.35, ge=0.1, le=0.9)
+    clip: bool = True      # encode CLIP image embeddings during analysis (skippable to save time)
 
 
 class SearchBody(BaseModel):
@@ -182,6 +183,7 @@ def create_app(engine: SearchEngine, uploads_dir: Path, samples_dir: Path, max_u
             "max_upload_mb": max_upload_mb,
             "attributes": engine.attr_model is not None,
             "clip": engine.clip_model is not None,
+            "clip_weight": CLIP_WEIGHT,
         }
 
     @app.post("/api/checkpoint")
@@ -269,7 +271,7 @@ def create_app(engine: SearchEngine, uploads_dir: Path, samples_dir: Path, max_u
     @app.post("/api/videos/{vid}/analyze")
     def analyze(vid: str, params: AnalyzeParams):
         v = get_video(vid)
-        key = (vid, params.max_frames, params.stride, round(params.conf, 2), TRACKER_VERSION)
+        key = (vid, params.max_frames, params.stride, round(params.conf, 2), params.clip and engine.clip_model is not None, TRACKER_VERSION)
         if key in analysis_keys and analysis_keys[key] in analyses:
             return {"analysis_id": analysis_keys[key], "cached": True, "job_id": None}
 

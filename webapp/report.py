@@ -138,7 +138,7 @@ def _html(analysis: Analysis, meta: Dict[str, Any], rows: List[Dict[str, Any]], 
   <div class="body">
     <h3>{tx['person']} {r['person_id']}</h3>
     <p class="score"><b>{r['fused']:.4f}</b> · {tx['prob']}: <b>{r['prob'] * 100:.1f}%</b></p>
-    <p class="sub">joint {r['joint']:.4f} · app {r['app']:.4f} · mot {r['mot']:.4f}{f" · clip {r['clip']:.4f}" if r.get('clip') is not None else ""}</p>
+    <p class="sub">joint {r['joint']:.4f} · app {r['app']:.4f} · mot {r['mot']:.4f}</p>
     <p class="sub">{tx['time']}: {_fmt_time(r['start_s'])} → {_fmt_time(r['end_s'])} · {tx['frames']} {r['start_frame']}–{r['end_frame']}</p>
     <div class="film">{film}</div>
   </div>

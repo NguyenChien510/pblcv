@@ -40,7 +40,7 @@ export class Player {
     this.canvas.addEventListener("mouseleave", () => { this.hoverId = null; this.tooltip.hidden = true; this.draw(true); });
     this.canvas.addEventListener("click", (e) => {
       const hit = this._hit(e);
-      if (hit != null) this.onSelect?.(hit, { seek: false });
+      if (hit != null) this.onSelect?.(hit, { seek: false, scrollCard: false });
       else this.toggle();
     });
 
@@ -253,6 +253,7 @@ export class Player {
   renderTimeline() {
     const total = this.frameCount;
     const dur = this.info?.duration || 0;
+    const keepScroll = this.tlLanes.scrollTop;   // rebuilding the lanes must not jump the lane list back to the top
     this.tlRuler.innerHTML = "";
     this.tlLanes.innerHTML = "";
     if (!total) return;
@@ -293,10 +294,11 @@ export class Player {
         un.style.width = `${unPct}%`;
         track.appendChild(un);
       }
-      lane.querySelector(".tl-label").addEventListener("click", () => this.onSelect?.(it.id, { seek: true }));
+      lane.querySelector(".tl-label").addEventListener("click", () => this.onSelect?.(it.id, { seek: true, scrollCard: false }));
       frag.appendChild(lane);
     }
     this.tlLanes.appendChild(frag);
+    this.tlLanes.scrollTop = keepScroll;
   }
 
   _bindTimelineScrub() {
@@ -310,7 +312,8 @@ export class Player {
       if (!this.frameCount || e.target.closest(".tl-label")) return;
       const seg = e.target.closest(".tl-seg");
       if (seg) {
-        this.onSelect?.(Number(seg.dataset.id), { seek: false });
+        // Scrubbing inside a lane keeps that person selected; only the label toggles.
+        this.onSelect?.(Number(seg.dataset.id), { seek: false, scrollCard: false, toggle: false });
       }
       dragging = true;
       this.video.pause();
