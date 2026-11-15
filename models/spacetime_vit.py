@@ -46,10 +46,13 @@ class DividedSpaceTimeBlock(nn.Module):
       2. Spatial Self-Attention: attends across N patches within each frame.
       3. Feedforward MLP.
     """
-    def __init__(self, embed_dim: int = 768, num_heads: int = 8, mlp_ratio: float = 4.0, drop: float = 0.1):
+    def __init__(self, embed_dim: int = 768, num_heads: int = 8, mlp_ratio: float = 4.0, drop: float = 0.1,
+                 use_temporal_attn: bool = True):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        # Ablation switch: False skips step 1; frames then interact only through the shared CLS token
+        self.use_temporal_attn = use_temporal_attn
 
         # 1. Temporal Attention
         self.norm_temp = nn.LayerNorm(embed_dim)
@@ -85,9 +88,10 @@ class DividedSpaceTimeBlock(nn.Module):
         # --- STEP 1: TEMPORAL ATTENTION ---
         # Reshape to [B * N, T, D] so that each spatial location attends across time
         p_t = patch_tokens.reshape(B, T, N, self.embed_dim).transpose(1, 2).reshape(B * N, T, self.embed_dim)
-        p_t_norm = self.norm_temp(p_t)
-        attn_out_temp, _ = self.attn_temp(p_t_norm, p_t_norm, p_t_norm, need_weights=False)
-        p_t = p_t + attn_out_temp
+        if self.use_temporal_attn:
+            p_t_norm = self.norm_temp(p_t)
+            attn_out_temp, _ = self.attn_temp(p_t_norm, p_t_norm, p_t_norm, need_weights=False)
+            p_t = p_t + attn_out_temp
 
         # Reshape back to [B, T, N, D] -> [B * T, N, D]
         p_s = p_t.reshape(B, N, T, self.embed_dim).transpose(1, 2).reshape(B * T, N, self.embed_dim)
@@ -131,13 +135,17 @@ class SpaceTimeViT(nn.Module):
         depth: int = 6,
         num_heads: int = 12,
         drop_rate: float = 0.1,
-        pretrained: bool = True
+        pretrained: bool = True,
+        use_temporal_attn: bool = True,
+        s3d_motion: bool = False,
+        pretrained_s3d: bool = True
     ):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
         self.num_frames = num_frames
         self.embed_dim = embed_dim
+        self.use_temporal_attn = use_temporal_attn
 
         # 1. Patch Embedding
         self.patch_embed = PatchEmbed(img_size, patch_size, in_channels, embed_dim)
@@ -152,7 +160,8 @@ class SpaceTimeViT(nn.Module):
 
         # 3. Divided Space-Time Transformer Blocks
         self.blocks = nn.ModuleList([
-            DividedSpaceTimeBlock(embed_dim=embed_dim, num_heads=num_heads, drop=drop_rate)
+            DividedSpaceTimeBlock(embed_dim=embed_dim, num_heads=num_heads, drop=drop_rate,
+                                  use_temporal_attn=use_temporal_attn)
             for _ in range(depth)
         ])
         self.norm = nn.LayerNorm(embed_dim)
@@ -175,6 +184,22 @@ class SpaceTimeViT(nn.Module):
             nn.Linear(embed_dim, embed_dim),
             nn.LayerNorm(embed_dim)
         )
+
+        # B2. Optional Kinetics-400 S3D clip encoder (the motion encoder family MFGF uses). Its pooled 1024-D clip
+        # feature is projected and added to the GRU motion vector; the projection starts at zero, so a model
+        # initialised from a checkpoint without S3D produces exactly the same embeddings at step 0.
+        self.s3d_motion = s3d_motion
+        if s3d_motion:
+            from torchvision.models.video import s3d, S3D_Weights
+            self.s3d = s3d(weights=S3D_Weights.KINETICS400_V1 if pretrained_s3d else None).features
+            self.s3d_proj = nn.Linear(1024, embed_dim)
+            nn.init.zeros_(self.s3d_proj.weight)
+            nn.init.zeros_(self.s3d_proj.bias)
+            # frames arrive ImageNet-normalised; S3D expects the Kinetics statistics
+            self.register_buffer("in_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 1, 3, 1, 1), persistent=False)
+            self.register_buffer("in_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 1, 3, 1, 1), persistent=False)
+            self.register_buffer("k_mean", torch.tensor([0.43216, 0.394666, 0.37645]).view(1, 1, 3, 1, 1), persistent=False)
+            self.register_buffer("k_std", torch.tensor([0.22803, 0.22145, 0.216989]).view(1, 1, 3, 1, 1), persistent=False)
 
         # C. Motion-Enhanced Fusion Head: V_video = MLP([V_app, V_mot])
         self.fusion_head = nn.Sequential(
@@ -300,6 +325,24 @@ class SpaceTimeViT(nn.Module):
                 print(f"[!] [SpaceTimeViT] Pretrained spatial load failed (TorchVision: {e_tv} | HF: {e_hf}). Initializing randomly.")
                 return False
 
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.s3d_motion:                                 # keep the Kinetics BatchNorm statistics (batch is only 16)
+            for m in self.s3d.modules():
+                if isinstance(m, nn.BatchNorm3d):
+                    m.eval()
+        return self
+
+    def _s3d_features(self, video_frames: torch.Tensor) -> torch.Tensor:
+        """Pooled S3D clip feature [B, 1024] of ImageNet-normalised frames [B, T, C, H, W]."""
+        x = (video_frames * self.in_std + self.in_mean - self.k_mean) / self.k_std
+        x = x.permute(0, 2, 1, 3, 4).contiguous()          # [B, C, T, H, W]
+        if self.training:
+            x = checkpoint.checkpoint_sequential(self.s3d, 4, x, use_reentrant=False)
+        else:
+            x = self.s3d(x)
+        return x.mean(dim=(2, 3, 4))
+
     def forward(self, video_frames: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -352,6 +395,8 @@ class SpaceTimeViT(nn.Module):
         gru_out, _ = self.motion_gru(frame_feats) # [B, T, D]
         # Motion vector is the aggregated temporal dynamics
         V_mot_raw = gru_out[:, -1, :] - gru_out[:, 0, :] + gru_out.mean(dim=1)
+        if self.s3d_motion:
+            V_mot_raw = V_mot_raw + self.s3d_proj(self._s3d_features(video_frames))
         V_mot = F.normalize(self.mot_head(V_mot_raw), p=2, dim=-1)
 
         # --- STREAM 3: MOTION-ENHANCED FUSED REPRESENTATION (V_video) ---

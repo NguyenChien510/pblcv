@@ -42,3 +42,22 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+
+source .venv/bin/activate
+web-demo --no-browser
+results/v6/
+results/v15/
+results/v7/
+results/v8/
+results/v9/
+results/pdf/
+results/*.docx
+results/*.pdf
+revision_code*.zip
+experiments/kaggle/push/code/*.zip
+*.docx
+# Kaggle runner notebooks embed a private Drive link to the dataset
+paper_kaggle.ipynb
+paper_kaggle_m3.ipynb
+experiments/kaggle/push/kernel*/*.ipynb

@@ -1,0 +1,176 @@
+{
+  "TVPReid-PRID": {
+    "videos": {
+      "train": 921,
+      "val": 71,
+      "test": 142
+    },
+    "captions": {
+      "train": 1842,
+      "val": 142,
+      "test": 284
+    },
+    "captions_per_video": {
+      "train": {
+        "2": 921
+      },
+      "val": {
+        "2": 71
+      },
+      "test": {
+        "2": 142
+      }
+    },
+    "person_ids": {
+      "train": 921,
+      "val": 71,
+      "test": 142
+    },
+    "person_ids_total": 1134,
+    "videos_total": 1134,
+    "shared_ids": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "test_videos_with_shared_ids_in_train": 0,
+    "shared_video_ids": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "test_videos_whose_pid_repeats_in_test_gallery": 0,
+    "val_videos_whose_pid_repeats_in_val_gallery": 0,
+    "mfgf_table2_videos": {
+      "train": 921,
+      "val": 71,
+      "test": 142
+    },
+    "matches_mfgf_table2": true,
+    "examples": [
+      "person0608 -> pid 608",
+      "person0584 -> pid 584",
+      "person0310 -> pid 310",
+      "person1018 -> pid 1018",
+      "person1128 -> pid 1128",
+      "person0091 -> pid 91"
+    ],
+    "dummy_data": false
+  },
+  "TVPReid-iLIDs": {
+    "videos": {
+      "train": 488,
+      "val": 37,
+      "test": 75
+    },
+    "captions": {
+      "train": 976,
+      "val": 74,
+      "test": 150
+    },
+    "captions_per_video": {
+      "train": {
+        "2": 488
+      },
+      "val": {
+        "2": 37
+      },
+      "test": {
+        "2": 75
+      }
+    },
+    "person_ids": {
+      "train": 488,
+      "val": 37,
+      "test": 75
+    },
+    "person_ids_total": 600,
+    "videos_total": 600,
+    "shared_ids": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "test_videos_with_shared_ids_in_train": 0,
+    "shared_video_ids": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "test_videos_whose_pid_repeats_in_test_gallery": 0,
+    "val_videos_whose_pid_repeats_in_val_gallery": 0,
+    "mfgf_table2_videos": {
+      "train": 488,
+      "val": 37,
+      "test": 75
+    },
+    "matches_mfgf_table2": true,
+    "examples": [
+      "person0503 -> pid 503",
+      "person0403 -> pid 403",
+      "person0124 -> pid 124",
+      "person0114 -> pid 114",
+      "person0539 -> pid 539",
+      "person0366 -> pid 366"
+    ],
+    "dummy_data": false
+  },
+  "TVPReid-Duke": {
+    "videos": {
+      "train": 3920,
+      "val": 302,
+      "test": 603
+    },
+    "captions": {
+      "train": 7840,
+      "val": 604,
+      "test": 1206
+    },
+    "captions_per_video": {
+      "train": {
+        "2": 3920
+      },
+      "val": {
+        "2": 302
+      },
+      "test": {
+        "2": 603
+      }
+    },
+    "person_ids": {
+      "train": 3920,
+      "val": 302,
+      "test": 603
+    },
+    "person_ids_total": 4825,
+    "videos_total": 4825,
+    "shared_ids": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "test_videos_with_shared_ids_in_train": 0,
+    "shared_video_ids": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "test_videos_whose_pid_repeats_in_test_gallery": 0,
+    "val_videos_whose_pid_repeats_in_val_gallery": 0,
+    "mfgf_table2_videos": {
+      "train": 3920,
+      "val": 302,
+      "test": 603
+    },
+    "matches_mfgf_table2": true,
+    "examples": [
+      "person4324 -> pid 4324",
+      "person1094 -> pid 1094",
+      "person0834 -> pid 834",
+      "person0212 -> pid 212",
+      "person4791 -> pid 4791",
+      "person1811 -> pid 1811"
+    ],
+    "dummy_data": false
+  }
+}

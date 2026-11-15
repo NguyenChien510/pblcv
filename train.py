@@ -40,6 +40,7 @@ import argparse
 import time
 import json
 import math
+import random
 from typing import Dict, List, Tuple, Any, Optional
 import torch
 import torch.nn as nn
@@ -82,6 +83,7 @@ DEFAULT_CONFIG = {
 
 
 def set_seed(seed: int = 42):
+    random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
@@ -103,6 +105,41 @@ def get_lr_scheduler(optimizer: torch.optim.Optimizer, epochs: int, warmup_epoch
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 
+class ModelEMA:
+    """Exponential moving average of the float tensors of model.state_dict() (recipe m3, --ema).
+    swap() exchanges the live weights with the averaged ones in place (no extra copy of the model)."""
+
+    def __init__(self, model: nn.Module, decay: float):
+        self.decay = float(decay)
+        self.updates = 0
+        self.shadow = {k: v.detach().clone() for k, v in model.state_dict().items() if v.dtype.is_floating_point}
+
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        self.updates += 1
+        d = min(self.decay, (1.0 + self.updates) / (10.0 + self.updates))
+        msd = model.state_dict()
+        for k, e in self.shadow.items():
+            e.mul_(d).add_(msd[k].detach(), alpha=1.0 - d)
+
+    @torch.no_grad()
+    def swap(self, model: nn.Module) -> None:
+        msd = model.state_dict()
+        for k, e in self.shadow.items():
+            tmp = msd[k].detach().clone()
+            msd[k].copy_(e)
+            e.copy_(tmp)
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {"decay": self.decay, "updates": self.updates, "shadow": self.shadow}
+
+    def load_state_dict(self, sd: Dict[str, Any]) -> None:
+        self.updates = int(sd.get("updates", 0))
+        for k, v in sd.get("shadow", {}).items():
+            if k in self.shadow:
+                self.shadow[k].copy_(v)
+
+
 def train_one_epoch(
     model: nn.Module,
     criterion: nn.Module,
@@ -114,7 +151,9 @@ def train_one_epoch(
     total_epochs: int = 30,
     use_amp: bool = True,
     grad_clip_norm: float = 1.0,
-    grad_accum_steps: int = 2
+    grad_accum_steps: int = 2,
+    use_dsca: bool = True,
+    ema: Optional["ModelEMA"] = None
 ) -> Tuple[float, float, float, float]:
     model.train()
     total_loss = 0.0
@@ -132,6 +171,9 @@ def train_one_epoch(
         captions = batch.get("caption", batch.get("q_app"))
         q_app = batch.get("q_app", None)
         q_mot = batch.get("q_mot", None)
+        if not use_dsca:
+            # Ablation "- DSCA": no decomposition, all three text streams use the full caption
+            q_app, q_mot = None, None
         video_frames = batch.get("video_frames", batch.get("motion_frames", batch.get("keyframes"))).to(device, non_blocking=True)
 
         if use_amp and device.type == "cuda":
@@ -141,7 +183,9 @@ def train_one_epoch(
                     T=out["T"], V=out["V_video"],
                     V_app=out["V_app"], V_mot=out["V_mot"],
                     l_mim=out["l_mim"],
-                    T_app=out.get("T_app"), T_mot=out.get("T_mot")
+                    T_app=out.get("T_app"), T_mot=out.get("T_mot"),
+                    video_keys=batch.get("video_key"),
+                    app_texts=q_app, mot_texts=q_mot
                 )
                 loss_scaled = loss / grad_accum_steps
 
@@ -153,13 +197,17 @@ def train_one_epoch(
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
+                if ema is not None:
+                    ema.update(model)
         else:
             out = model(captions, video_frames, q_app=q_app, q_mot=q_mot)
             loss, breakdown = criterion(
                 T=out["T"], V=out["V_video"],
                 V_app=out["V_app"], V_mot=out["V_mot"],
                 l_mim=out["l_mim"],
-                T_app=out.get("T_app"), T_mot=out.get("T_mot")
+                T_app=out.get("T_app"), T_mot=out.get("T_mot"),
+                video_keys=batch.get("video_key"),
+                app_texts=q_app, mot_texts=q_mot
             )
             loss_scaled = loss / grad_accum_steps
             loss_scaled.backward()
@@ -168,6 +216,8 @@ def train_one_epoch(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
                 optimizer.step()
                 optimizer.zero_grad()
+                if ema is not None:
+                    ema.update(model)
 
         total_loss += loss.item()
         total_app += breakdown.get("loss_app", 0.0)
@@ -204,19 +254,31 @@ def train_one_epoch(
     return avg_loss, avg_app, avg_mot, avg_mim
 
 
+def atomic_save(obj, path) -> None:
+    """Write to a temp file then rename, so an interrupted save never leaves a truncated checkpoint."""
+    tmp = f"{path}.tmp"
+    if os.environ.get("PBL_LOW_DISK") == "1" and str(path).endswith("latest.pth") and os.path.exists(path):
+        os.remove(path)          # no room for two copies: an interrupted save then restarts the run (best.pth is kept)
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
-    alpha: float = 0.5
+    alpha: float = 0.5,
+    weights: Tuple[float, float, float] = (0.50, 0.35, 0.15),
+    use_dsca: bool = True
 ) -> Tuple[dict, np.ndarray, np.ndarray]:
     """
     Evaluates Text-to-Video Person Retrieval following standard TVPR benchmark protocol:
       - All N_queries text queries are evaluated.
       - Gallery contains UNIQUE video tracks (deduplicated by video_id).
-      - Multi-level Disentangled Concept Alignment scoring:
-          Score = 0.50 * CosSim(T_full, V_video) + 0.35 * CosSim(T_app, V_app) + 0.15 * CosSim(T_mot, V_mot)
+      - Multi-level Disentangled Concept Alignment scoring (default weights w = 0.50 / 0.35 / 0.15):
+          Score = w1 * CosSim(T_full, V_video) + w2 * CosSim(T_app, V_app) + w3 * CosSim(T_mot, V_mot)
+    Used on the validation split only (checkpoint selection); the test split is evaluated by experiments/.
     """
     model.eval()
     all_t = []
@@ -229,14 +291,17 @@ def evaluate(
     gallery_v_mot = []
     gallery_pids = []
     visited_videos = set()
+    visited_order = []
 
     for batch in dataloader:
         captions = batch.get("caption", batch.get("q_app"))
         q_app = batch.get("q_app", None)
         q_mot = batch.get("q_mot", None)
         video_frames = batch.get("video_frames", batch.get("motion_frames", batch.get("keyframes"))).to(device, non_blocking=True)
-        video_ids = batch.get("video_id")
+        video_ids = batch.get("video_key", batch.get("video_id"))
         pids = batch["person_id"].numpy()
+        if not use_dsca:
+            q_app, q_mot = None, None
 
         out = model(captions, video_frames, q_app=q_app, q_mot=q_mot)
 
@@ -255,10 +320,19 @@ def evaluate(
             vid = video_ids[i] if video_ids is not None else pids[i]
             if vid not in visited_videos:
                 visited_videos.add(vid)
+                visited_order.append(vid)
                 gallery_v.append(v_vid_cpu[i:i+1])
                 gallery_v_app.append(v_app_cpu[i:i+1])
                 gallery_v_mot.append(v_mot_cpu[i:i+1])
                 gallery_pids.append(pids[i])
+
+    query_keys = list(getattr(dataloader.dataset, "samples", None) or [])
+    query_keys = [f"{q.get('dataset', '')}/{q.get('video_id')}" for q in query_keys]
+    if len({k.split("/", 1)[0] for k in visited_videos if isinstance(k, str)}) > 1 and len(query_keys) == len(query_pids):
+        # Several sub-datasets: person ids repeat across them, so match on the video key instead
+        key_id = {k: i for i, k in enumerate(dict.fromkeys(query_keys))}
+        query_pids = [key_id[k] for k in query_keys]
+        gallery_pids = [key_id[k] for k in visited_order]
 
     T_full = torch.cat(all_t, dim=0)
     T_app = torch.cat(all_t_app, dim=0)
@@ -283,7 +357,8 @@ def evaluate(
     sim_mot = torch.matmul(T_mot_n, V_mot_n.t())
 
     # Multi-level Disentangled Concept Scoring
-    sim_matrix = (0.50 * sim_joint + 0.35 * sim_app + 0.15 * sim_mot).cpu().numpy()
+    w1, w2, w3 = weights
+    sim_matrix = (w1 * sim_joint + w2 * sim_app + w3 * sim_mot).cpu().numpy()
     metrics = evaluate_rank_metrics(sim_matrix, pids_text, pids_video)
     return metrics, sim_matrix, pids_video, pids_text
 
@@ -302,7 +377,37 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Resume checkpoint path ('best', 'latest', or path/to/file.pth)")
     parser.add_argument("--pretrained_vit", action="store_true", default=None, help="Load ImageNet pretrained weights into ViT spatial layers")
     parser.add_argument("--no_pretrained_vit", dest="pretrained_vit", action="store_false", help="Disable ViT spatial pretraining")
-    
+    # Revision experiments (seeds / ablations). Without these flags training is unchanged.
+    parser.add_argument("--seed", type=int, default=None, help="Random seed override (train.seed in the config)")
+    parser.add_argument("--tag", type=str, default=None, help="Run name: checkpoints/reports go to <dir>/<sub_dataset>/<tag>/")
+    parser.add_argument("--lambda_app", type=float, default=None, help="Override lambda_app (appearance InfoNCE weight)")
+    parser.add_argument("--lambda_mot", type=float, default=None, help="Override lambda_mot (motion InfoNCE weight)")
+    parser.add_argument("--lambda_mim", type=float, default=None, help="Override lambda_mim (orthogonality weight)")
+    parser.add_argument("--no_temporal_attn", action="store_true", help="Ablation: skip temporal attention in every SpaceTimeViT block")
+    parser.add_argument("--no_dsca", action="store_true", help="Ablation: no text decomposition, T_app = T_mot = T_full")
+    # Recipe v2 (all off by default; see experiments/plan.py RECIPES)
+    parser.add_argument("--backbone", choices=["spacetime", "mfgf"], default=None,
+                        help="Video encoder: spacetime (default) or mfgf = Frozen-in-Time ViT (4 frames) + S3D (16 frames)")
+    parser.add_argument("--s3d_motion", action="store_true", help="Add a Kinetics-400 S3D clip feature to the motion stream")
+    # Recipe m3 (all off by default; without them training is unchanged)
+    parser.add_argument("--clip_flip", action="store_true", help="Flip whole clips (and swap left/right in the caption) instead of every frame on its own")
+    parser.add_argument("--text_pos", action="store_true", help="app/mot InfoNCE: batch items with the same Q_app/Q_mot string are positives")
+    parser.add_argument("--dsca_mode", choices=["keyword", "clause"], default=None, help="DSCA sub-prompts: keyword bags (original) or whole clauses")
+    parser.add_argument("--temporal_head_lr", action="store_true", help="Train the new temporal attention / temporal embedding at the head lr, not the backbone lr")
+    parser.add_argument("--mim_mode", choices=["raw", "centered"], default=None, help="L_MIM on raw or batch-centred V_app/V_mot")
+    parser.add_argument("--ema", type=float, default=None, help="EMA decay of the weights used for validation and best.pth (0 = off)")
+    parser.add_argument("--unique_video_batches", action="store_true", help="No two captions of the same video in a batch")
+    parser.add_argument("--queue_size", type=int, default=None, help="Cross-batch memory of detached embeddings (extra negatives); 0 = off")
+    parser.add_argument("--queue_start_epoch", type=int, default=None, help="First epoch that uses the queue (default: after warmup)")
+    parser.add_argument("--learnable_tau", action="store_true", help="Learn the InfoNCE temperature (init = model.temperature)")
+    parser.add_argument("--weight_decay", type=float, default=None, help="AdamW weight decay override")
+    parser.add_argument("--select_metric", choices=["r1", "mean_r1_5_10"], default=None,
+                        help="Validation score used to keep best.pth (default r1)")
+    parser.add_argument("--init_from", type=str, default=None,
+                        help="Start from these model weights (e.g. a joint all-subset run) with a fresh optimizer/schedule")
+    parser.add_argument("--eval_weights", type=float, nargs=3, default=None, metavar=("J", "A", "M"),
+                        help="Fusion weights of the per-epoch validation score used for checkpoint selection (default 0.50 0.35 0.15)")
+
     # Use parse_known_args to gracefully handle any extra/unknown flags
     args, unknown = parser.parse_known_args()
     if unknown:
@@ -326,6 +431,55 @@ def main():
         except Exception as e:
             print(f"[!] Warning reading yaml config: {e}")
 
+    # CLI overrides for revision experiments; written into cfg so they are stored in every checkpoint
+    if args.seed is not None:
+        cfg.setdefault("train", {})["seed"] = args.seed
+    for key in ("lambda_app", "lambda_mot", "lambda_mim"):
+        if getattr(args, key) is not None:
+            cfg.setdefault("model", {})[key] = getattr(args, key)
+    if args.no_temporal_attn:
+        cfg.setdefault("model", {})["use_temporal_attn"] = False
+    if args.no_dsca:
+        cfg.setdefault("model", {})["use_dsca"] = False
+    if args.s3d_motion:
+        cfg.setdefault("model", {})["s3d_motion"] = True
+    if args.backbone:
+        cfg.setdefault("model", {})["backbone"] = args.backbone
+    if args.eval_weights is not None:
+        cfg.setdefault("eval", {})["weights"] = list(args.eval_weights)
+    if args.pretrained_vit is not None:
+        cfg.setdefault("model", {})["pretrained_vit"] = args.pretrained_vit
+    tcfg = cfg.setdefault("train", {})
+    if args.unique_video_batches:
+        tcfg["unique_video_batches"] = True
+    if args.clip_flip:
+        tcfg["clip_flip"] = True
+    if args.text_pos:
+        tcfg["text_pos"] = True
+    if args.temporal_head_lr:
+        tcfg["temporal_head_lr"] = True
+    if args.ema is not None:
+        tcfg["ema"] = args.ema
+    if args.dsca_mode is not None:
+        cfg.setdefault("model", {})["dsca_mode"] = args.dsca_mode
+    if args.mim_mode is not None:
+        cfg.setdefault("model", {})["mim_mode"] = args.mim_mode
+    if args.queue_size is not None:
+        tcfg["queue_size"] = args.queue_size
+    if args.queue_start_epoch is not None:
+        tcfg["queue_start_epoch"] = args.queue_start_epoch
+    if args.learnable_tau:
+        tcfg["learnable_tau"] = True
+    if args.weight_decay is not None:
+        tcfg["weight_decay"] = args.weight_decay
+    if args.select_metric is not None:
+        tcfg["select_metric"] = args.select_metric
+    if args.init_from:
+        tcfg["init_from"] = args.init_from
+    select_metric = tcfg.get("select_metric", "r1")
+    use_dsca = bool(cfg.get("model", {}).get("use_dsca", True))
+    eval_weights = tuple(cfg.get("eval", {}).get("weights", (0.50, 0.35, 0.15)))
+
     # Determine sub-dataset and configure dedicated folders defensively
     dataset_name = cfg.get("data", {}).get("dataset_name", "TVPReid_dataset")
     sub_dataset = args.sub_dataset or cfg.get("data", {}).get("sub_dataset", "TVPReid-Duke")
@@ -342,6 +496,16 @@ def main():
         paths.checkpoints_dir.mkdir(parents=True, exist_ok=True)
         paths.reports_dir.mkdir(parents=True, exist_ok=True)
         paths.outputs_dir.mkdir(parents=True, exist_ok=True)
+        paths.get_checkpoint_path = lambda filename="best.pth": paths.checkpoints_dir / filename
+        paths.get_report_path = lambda filename="eval_results.json": paths.reports_dir / filename
+
+    if args.tag:
+        # Each tagged run (seed / ablation) gets its own folders and never falls back to another run's checkpoint
+        paths.checkpoints_dir = paths.checkpoints_dir / args.tag
+        paths.reports_dir = paths.reports_dir / args.tag
+        paths.outputs_dir = paths.outputs_dir / args.tag
+        for d in (paths.checkpoints_dir, paths.reports_dir, paths.outputs_dir):
+            d.mkdir(parents=True, exist_ok=True)
         paths.get_checkpoint_path = lambda filename="best.pth": paths.checkpoints_dir / filename
         paths.get_report_path = lambda filename="eval_results.json": paths.reports_dir / filename
 
@@ -378,6 +542,12 @@ def main():
     print(f"  • Batch Size        : {batch_size} (Train, Accum={grad_accum_steps} -> Eff={batch_size*grad_accum_steps}) | {eval_batch_size} (Eval)")
     print(f"  • Learning Rate     : {lr} (Warmup {warmup_epochs} eps -> Cosine decay to {min_lr})")
     print(f"  • Eval Interval     : Every {eval_interval} epoch(s)")
+    print(f"  • Seed / Tag        : {cfg.get('train', {}).get('seed', 42)} / {args.tag or '-'}")
+    print(f"  • Ablation flags    : temporal_attn={cfg.get('model', {}).get('use_temporal_attn', True)} | dsca={use_dsca} | "
+          f"pretrained_vit={cfg.get('model', {}).get('pretrained_vit', True)} | s3d={cfg.get('model', {}).get('s3d_motion', False)} | backbone={cfg.get('model', {}).get('backbone', 'spacetime')} | val weights={eval_weights}")
+    print(f"  • Recipe            : unique_video={tcfg.get('unique_video_batches', False)} | queue={tcfg.get('queue_size', 0)} | "
+          f"learnable_tau={tcfg.get('learnable_tau', False)} | wd={tcfg.get('weight_decay', 0.0001)} | "
+          f"select={select_metric} | init_from={tcfg.get('init_from') or '-'}")
     print("=" * 65 + "\n")
 
     # Create Dataloaders for specific sub_dataset
@@ -391,7 +561,12 @@ def main():
             num_workers=num_workers,
             keyframe_num=cfg.get("model", {}).get("keyframe_num", 4),
             motion_frame_num=cfg.get("model", {}).get("motion_frame_num", 16),
-            img_size=cfg.get("model", {}).get("img_size", 224)
+            img_size=cfg.get("model", {}).get("img_size", 224),
+            unique_video=bool(tcfg.get("unique_video_batches", False)),
+            seed=int(tcfg.get("seed", 42)),
+            frame_layout="mfgf" if cfg.get("model", {}).get("backbone") == "mfgf" else "uniform",
+            clip_flip=bool(tcfg.get("clip_flip", False)),
+            dsca_mode=cfg.get("model", {}).get("dsca_mode", "keyword")
         )
     except TypeError:
         train_loader, val_loader = create_dataloaders(
@@ -415,15 +590,38 @@ def main():
         vit_depth=model_cfg.get("vit_depth", 6),
         vit_heads=model_cfg.get("vit_heads", 12),
         drop_rate=model_cfg.get("drop_rate", 0.1),
-        pretrained_vit=pretrained_vit_flag
+        pretrained_vit=pretrained_vit_flag,
+        use_temporal_attn=model_cfg.get("use_temporal_attn", True),
+        s3d_motion=model_cfg.get("s3d_motion", False),
+        backbone=model_cfg.get("backbone", "spacetime"),
+        mim_mode=model_cfg.get("mim_mode", "raw")
     ).to(device)
+
+    if getattr(model.video_encoder, "weights_source", None):
+        cfg.setdefault("model", {})["visual_weights"] = model.video_encoder.weights_source   # stored in every checkpoint
+        print(f"  • Visual weights    : {cfg['model']['visual_weights']}")
 
     criterion = DAMRCriterion(
         temperature=cfg.get("model", {}).get("temperature", 0.05),
         lambda_app=cfg.get("model", {}).get("lambda_app", 0.5),
         lambda_mot=cfg.get("model", {}).get("lambda_mot", 0.25),
-        lambda_mim=cfg.get("model", {}).get("lambda_mim", 0.1)
+        lambda_mim=cfg.get("model", {}).get("lambda_mim", 0.1),
+        learnable_tau=bool(tcfg.get("learnable_tau", False)),
+        queue_size=int(tcfg.get("queue_size", 0) or 0),
+        text_pos=bool(tcfg.get("text_pos", False))
     ).to(device)
+    queue_start_epoch = int(tcfg.get("queue_start_epoch", warmup_epochs + 1))
+
+    if tcfg.get("init_from"):
+        init_ck = torch.load(tcfg["init_from"], map_location=device, weights_only=False)
+        missing, unexpected = model.load_state_dict(init_ck["model_state_dict"], strict=False)
+        missing = [k for k in missing if not k.startswith(("video_encoder.s3d.", "video_encoder.s3d_proj."))]
+        if missing or unexpected:     # only modules added on top of the init checkpoint may be missing
+            raise RuntimeError(f"init_from mismatch: missing={missing[:5]} unexpected={unexpected[:5]}")
+        if init_ck.get("criterion_state_dict"):
+            criterion.load_state_dict(init_ck["criterion_state_dict"], strict=False)
+        print(f"[+] Initialised from {tcfg['init_from']} (epoch {init_ck.get('epoch')}); optimizer and schedule start fresh")
+        del init_ck
 
     # 3-Tier Differential Learning Rates:
     # 1. Pretrained backbones (BERT + ViT spatial blocks + PatchEmbed): fine-tune gently at lr * 0.2 (2e-5)
@@ -439,8 +637,12 @@ def main():
             "patch_embed" in name or
             "spatial_pos" in name or
             "cls_token" in name or
+            "video_encoder.s3d." in name or
+            "video_encoder.vit." in name or
             ("video_encoder.blocks" in name and ("attn_spat" in name or "norm_spat" in name or "mlp" in name or "norm_mlp" in name))
         )
+        if tcfg.get("temporal_head_lr") and any(k in name for k in ("timeattn", "norm3", "temporal_embed")):
+            is_pretrained = False          # recipe m3: new (zero-initialised) temporal parts learn at the head lr
         if is_pretrained:
             pretrained_params.append(param)
         else:
@@ -450,11 +652,16 @@ def main():
     optimizer = torch.optim.AdamW([
         {"params": pretrained_params, "lr": lr * 0.2, "weight_decay": wd},
         {"params": head_params, "lr": lr * 1.0, "weight_decay": wd},
-    ])
+    ] + ([{"params": list(criterion.parameters()), "lr": lr * 1.0, "weight_decay": 0.0}]
+         if any(True for _ in criterion.parameters()) else []))
     scheduler = get_lr_scheduler(optimizer, epochs=epochs, warmup_epochs=warmup_epochs, base_lr=lr, min_lr=min_lr)
 
     use_amp_flag = cfg.get("train", {}).get("use_amp", True) and (device.type == "cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp_flag)
+    ema_decay = float(tcfg.get("ema", 0.0) or 0.0)
+    ema = ModelEMA(model, ema_decay) if ema_decay > 0 else None
+    if ema is not None:
+        print(f"  • EMA               : decay {ema_decay} (validation + best.pth use the averaged weights)")
 
     history = {
         "epochs": [],
@@ -492,15 +699,21 @@ def main():
             except TypeError:
                 checkpoint = torch.load(resume_path, map_location=device)
             model.load_state_dict(checkpoint["model_state_dict"])
+            if checkpoint.get("criterion_state_dict"):
+                criterion.load_state_dict(checkpoint["criterion_state_dict"], strict=False)
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if "scheduler_state_dict" in checkpoint and checkpoint["scheduler_state_dict"]:
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             if "scaler_state_dict" in checkpoint and checkpoint["scaler_state_dict"] and scaler:
                 scaler.load_state_dict(checkpoint["scaler_state_dict"])
+            if ema is not None and checkpoint.get("ema_state_dict"):
+                ema.load_state_dict(checkpoint["ema_state_dict"])
             if "epoch" in checkpoint:
                 start_epoch = checkpoint["epoch"] + 1
-            if "metrics" in checkpoint:
+            if "best_score" in checkpoint:
+                best_r1 = checkpoint["best_score"]
+            elif "metrics" in checkpoint:
                 best_r1 = checkpoint["metrics"].get("R@1", 0.0)
             if "history" in checkpoint and checkpoint["history"]:
                 history = checkpoint["history"]
@@ -513,10 +726,13 @@ def main():
             print(f"[!] Warning: Specified resume checkpoint '{resume_path}' not found. Starting from Epoch 1.")
 
     for epoch in range(start_epoch, epochs + 1):
+        if hasattr(getattr(train_loader, "batch_sampler", None), "set_epoch"):
+            train_loader.batch_sampler.set_epoch(epoch)
+        criterion.queue_active = criterion.queues is not None and epoch >= queue_start_epoch
         avg_loss, avg_app, avg_mot, avg_mim = train_one_epoch(
             model, criterion, train_loader, optimizer, scaler,
             device, epoch, epochs, use_amp=use_amp_flag, grad_clip_norm=grad_clip_norm,
-            grad_accum_steps=grad_accum_steps
+            grad_accum_steps=grad_accum_steps, use_dsca=use_dsca, ema=ema
         )
         scheduler.step()
 
@@ -529,8 +745,11 @@ def main():
 
         do_eval = (epoch % eval_interval == 0) or (epoch == epochs)
         if do_eval:
+            if ema is not None:
+                ema.swap(model)            # validate and save best.pth with the averaged weights
             eval_alpha = float(cfg.get("model", {}).get("alpha", 0.85))
-            metrics, sim_matrix, pids, pids_text = evaluate(model, val_loader, device, alpha=eval_alpha)
+            metrics, sim_matrix, pids, pids_text = evaluate(model, val_loader, device, alpha=eval_alpha,
+                                                            weights=eval_weights, use_dsca=use_dsca)
             r1 = metrics.get("R@1", 0.0)
             mdr = metrics.get("MdR", 0.0)
             print(f"📊 Validation Results [Epoch {epoch:02d}]: Rank@1 = {r1:.2f}% | Rank@5 = {metrics.get('R@5', 0):.2f}% | MdR = {mdr:.1f} (alpha={eval_alpha})")
@@ -551,8 +770,12 @@ def main():
             except Exception as e:
                 print(f"[!] Warning: Failed to save training history / dashboard plots: {e}", flush=True)
 
-            if r1 > best_r1:
-                best_r1 = r1
+            score = r1 if select_metric == "r1" else \
+                (metrics.get("R@1", 0.0) + metrics.get("R@5", 0.0) + metrics.get("R@10", 0.0)) / 3.0
+            if select_metric != "r1":
+                print(f"    selection score ({select_metric}) = {score:.2f} (best so far {best_r1:.2f})")
+            if score > best_r1:
+                best_r1 = score
                 best_path = paths.get_checkpoint_path("best.pth")
                 best_data = {
                     "epoch": epoch,
@@ -562,13 +785,23 @@ def main():
                     "scheduler_state_dict": scheduler.state_dict(),
                     "scaler_state_dict": scaler.state_dict() if scaler else None,
                     "metrics": metrics,
+                    "best_score": best_r1,
+                    "criterion_state_dict": criterion.state_dict(),
                     "config": cfg,
                     "history": history
                 }
-                torch.save(best_data, best_path)
-                print(f"🏆 New Best Model Saved to: {best_path} (Rank@1: {best_r1:.2f}%)")
+                if ema is not None:
+                    # best.pth holds the EMA weights; the optimizer state belongs to the live weights and only
+                    # latest.pth needs it (resume). Dropping it saves ~1.7 GB per run (Kaggle /kaggle/working is 20 GB).
+                    for k in ("optimizer_state_dict", "scheduler_state_dict", "scaler_state_dict"):
+                        best_data.pop(k, None)
+                atomic_save(best_data, best_path)
+                print(f"🏆 New Best Model Saved to: {best_path} (Rank@1: {r1:.2f}%)")
 
+        if do_eval and ema is not None:
+            ema.swap(model)                # back to the live weights for training / latest.pth
         checkpoint_data = {
+            "ema_state_dict": ema.state_dict() if ema is not None else None,
             "epoch": epoch,
             "lr": optimizer.param_groups[0]["lr"],
             "model_state_dict": model.state_dict(),
@@ -576,11 +809,13 @@ def main():
             "scheduler_state_dict": scheduler.state_dict(),
             "scaler_state_dict": scaler.state_dict() if scaler else None,
             "metrics": metrics if do_eval else (checkpoint_data.get("metrics") if "checkpoint_data" in locals() else {}),
+            "best_score": best_r1,
+            "criterion_state_dict": criterion.state_dict(),
             "config": cfg,
             "history": history
         }
         latest_path = paths.get_checkpoint_path("latest.pth")
-        torch.save(checkpoint_data, latest_path)
+        atomic_save(checkpoint_data, latest_path)
 
 
 if __name__ == "__main__":

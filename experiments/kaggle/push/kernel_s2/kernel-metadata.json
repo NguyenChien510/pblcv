@@ -1,0 +1,14 @@
+{
+  "id": "dorisnguyen510/spacetime-dsca-m3c",
+  "title": "spacetime-dsca-m3c",
+  "code_file": "spacetime-dsca-m3c.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "machine_shape": "NvidiaTeslaT4",
+  "dataset_sources": ["dorisnguyen510/pblcv-code", "dorisnguyen510/dataset"],
+  "competition_sources": [],
+  "kernel_sources": ["dorisnguyen510/spacetime-dsca-m3"]
+}

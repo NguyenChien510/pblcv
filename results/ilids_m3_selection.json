@@ -1,0 +1,29 @@
+{
+ "sub": "TVPReid-iLIDs",
+ "criterion": "mean over 3 seeds of VAL mean(R@1,R@5,R@10), all2 protocol, val-selected weights+beta",
+ "val": {
+  "m2s": [
+   74.775,
+   76.126,
+   78.378
+  ],
+  "m3": [
+   76.12612612612612,
+   76.57657657657658,
+   77.92792792792791
+  ],
+  "m3j": [
+   85.58558558558559,
+   82.88288288288288,
+   84.68468468468468
+  ]
+ },
+ "val_mean": {
+  "m2s": 76.42633333333333,
+  "m3": 76.87687687687686,
+  "m3j": 84.38438438438438
+ },
+ "selected": "m3j",
+ "note": "test metrics of m3 and m3j were printed in the same Kaggle session; the choice follows the pre-stated val rule",
+ "recorded_at": "2026-11-12T17:20:12"
+}

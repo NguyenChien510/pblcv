@@ -1,0 +1,19 @@
+{
+  "sub": "TVPReid-iLIDs",
+  "criterion": "mean over 3 seeds of VAL mean(R@1,R@5,R@10), all2 protocol, val-selected weights+beta",
+  "m2s_val_per_seed": [
+    74.775,
+    76.126,
+    78.378
+  ],
+  "m2s_val_mean": 76.426,
+  "m2f_val_per_seed": [
+    75.225,
+    75.676,
+    77.928
+  ],
+  "m2f_val_mean": 76.276,
+  "selected": "m2s",
+  "recorded_before_m2f_test": true,
+  "recorded_at": "2026-11-04T14:49:24"
+}

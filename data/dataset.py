@@ -51,6 +51,17 @@ def get_default_video_transforms(img_size: int = 224, is_train: bool = True):
         ])
 
 
+_LR = {"left": "right", "right": "left"}
+
+
+def swap_left_right(text: str) -> str:
+    """'turns left' -> 'turns right' (keeps the case of the first letter); used with a horizontally flipped clip."""
+    def rep(m):
+        w = _LR[m.group(0).lower()]
+        return w.capitalize() if m.group(0)[0].isupper() else w
+    return re.sub(r"\b(left|right)\b", rep, text, flags=re.IGNORECASE)
+
+
 class TVPRDataset(Dataset):
     """
     Multimodal Dataset for Text-to-Video Person Retrieval (TVPR / DAMR-LLM).
@@ -76,12 +87,20 @@ class TVPRDataset(Dataset):
         self.sub_dataset = str(sub_dataset).strip() if sub_dataset else "all"
         self.split = split.lower()
         self.num_frames = num_frames if num_frames else motion_frame_num
+        # "mfgf": 4 discrete frames (Visual Encoder) followed by 16 consecutive frames (Motion Encoder), as in MFGF
+        self.frame_layout = kwargs.get("frame_layout", "uniform") or "uniform"
+        if self.frame_layout == "mfgf":
+            self.num_frames = 4 + 16
         self.keyframe_num = keyframe_num
         self.motion_frame_num = self.num_frames
         self.img_size = img_size
         self.is_train = (self.split == "train")
-        self.transform = get_default_video_transforms(img_size, is_train=self.is_train)
-        self.decomposer = TextDecomposer(language=language, llm_cache=llm_cache)
+        # clip_flip (recipe m3): flip all frames of a clip together (and swap left/right in the caption) instead of
+        # flipping every frame independently inside the per-frame transform
+        self.clip_flip = bool(kwargs.get("clip_flip", False)) and self.is_train
+        self.transform = get_default_video_transforms(img_size, is_train=self.is_train and not self.clip_flip)
+        self.decomposer = TextDecomposer(language=language, llm_cache=llm_cache,
+                                         mode=kwargs.get("dsca_mode", "keyword") or "keyword")
 
         # Discover subfolder dataset directories (CUHK-PEDES, TVPReid-Duke, TVPReid-PRID, TVPReid-iLIDs)
         self.target_dirs: List[Tuple[str, str]] = []
@@ -309,6 +328,17 @@ class TVPRDataset(Dataset):
             indices.append(min(idx, total_frames - 1))
         return indices
 
+    def _layout_indices(self, total_frames: int) -> List[int]:
+        if self.frame_layout != "mfgf":
+            return self._sample_frame_indices(total_frames, self.num_frames)
+        discrete = self._sample_frame_indices(total_frames, 4)
+        if total_frames <= 16:
+            consecutive = np.linspace(0, max(total_frames - 1, 0), 16, dtype=int).tolist()
+        else:
+            start = random.randint(0, total_frames - 16) if self.is_train else (total_frames - 16) // 2
+            consecutive = list(range(start, start + 16))
+        return discrete + consecutive
+
     def _read_video_frames(self, video_path: Optional[str]) -> torch.Tensor:
         """
         Extracts T = self.num_frames (default 16) frames as a tensor of shape [T, 3, H, W].
@@ -331,7 +361,7 @@ class TVPRDataset(Dataset):
                 return torch.stack([default_tensor] * t)
 
             num_f = len(img_files)
-            target_indices = self._sample_frame_indices(num_f, t)
+            target_indices = self._layout_indices(num_f)
             frame_tensors = []
             for idx in target_indices:
                 try:
@@ -350,7 +380,7 @@ class TVPRDataset(Dataset):
         if total_frames <= 0:
             total_frames = t
 
-        target_indices = self._sample_frame_indices(total_frames, t)
+        target_indices = self._layout_indices(total_frames)
         needed_set = set(target_indices)
         max_needed = max(target_indices) if target_indices else 0
 
@@ -387,6 +417,9 @@ class TVPRDataset(Dataset):
         item = self.samples[index]
         caption = item["caption"]
         video_frames = self._read_video_frames(item.get("video_path"))
+        if self.clip_flip and random.random() < 0.5:
+            video_frames = torch.flip(video_frames, dims=[-1])
+            caption = swap_left_right(caption)
 
         # Disentangled Semantic Concept Alignment (DSCA) decomposition
         q_app, q_mot = self.decomposer.decompose(caption)
@@ -394,6 +427,8 @@ class TVPRDataset(Dataset):
         k = min(self.keyframe_num, video_frames.size(0))
         return {
             "video_id": item.get("video_id", f"vid_{index}"),
+            # video_id repeats across sub-datasets (person0001 exists in PRID and iLIDs); the key does not
+            "video_key": f"{item.get('dataset', '')}/{item.get('video_id', f'vid_{index}')}",
             "person_id": item.get("person_id", index),
             "caption": caption,
             "q_app": q_app,
@@ -403,6 +438,46 @@ class TVPRDataset(Dataset):
             "keyframes": video_frames[:k],       # [K, C, H, W]
             "motion_frames": video_frames,       # [T, C, H, W]
         }
+
+
+class UniqueVideoBatchSampler(torch.utils.data.Sampler):
+    """
+    Shuffled batches in which no two captions belong to the same video. With plain shuffling the two captions of a
+    video can share a batch, and InfoNCE then treats one of them as a negative of the other's video.
+    Reshuffled every epoch from a generator seeded once (set_epoch keeps the order reproducible after a resume).
+    """
+
+    def __init__(self, video_keys: List[str], batch_size: int, seed: int = 0):
+        self.keys = list(video_keys)
+        self.batch_size = batch_size
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __len__(self) -> int:
+        return len(self.keys) // self.batch_size
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed * 1000003 + self.epoch)
+        self.epoch += 1
+        pending = torch.randperm(len(self.keys), generator=g).tolist()
+        n_out = 0
+        while pending and n_out < len(self):
+            batch, used, rest = [], set(), []
+            for i in pending:
+                if len(batch) < self.batch_size and self.keys[i] not in used:
+                    batch.append(i)
+                    used.add(self.keys[i])
+                else:
+                    rest.append(i)
+            if len(batch) < self.batch_size:
+                break                                  # drop_last: not enough distinct videos left
+            yield batch
+            n_out += 1
+            pending = rest
 
 
 def create_dataloaders(
@@ -417,6 +492,8 @@ def create_dataloaders(
     img_size: int = 224,
     language: str = "en",
     pin_memory: bool = True,
+    unique_video: bool = False,
+    seed: int = 0,
     **kwargs
 ) -> Tuple[DataLoader, DataLoader]:
     """Creates PyTorch Train and Val DataLoaders for Spatio-Temporal DAMR."""
@@ -431,7 +508,10 @@ def create_dataloaders(
         motion_frame_num=target_frames,
         num_frames=target_frames,
         img_size=img_size,
-        language=language
+        language=language,
+        frame_layout=kwargs.get("frame_layout", "uniform"),
+        clip_flip=kwargs.get("clip_flip", False),
+        dsca_mode=kwargs.get("dsca_mode", "keyword")
     )
     val_dataset = TVPRDataset(
         data_root=data_root,
@@ -442,7 +522,9 @@ def create_dataloaders(
         motion_frame_num=target_frames,
         num_frames=target_frames,
         img_size=img_size,
-        language=language
+        language=language,
+        frame_layout=kwargs.get("frame_layout", "uniform"),
+        dsca_mode=kwargs.get("dsca_mode", "keyword")
     )
 
     is_cuda = torch.cuda.is_available() and pin_memory
@@ -458,13 +540,21 @@ def create_dataloaders(
     if prefetch:
         loader_kwargs["prefetch_factor"] = prefetch
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=True,
-        **loader_kwargs
-    )
+    if unique_video:
+        keys = [f"{s.get('dataset', '')}/{s.get('video_id', i)}" for i, s in enumerate(train_dataset.samples)]
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=UniqueVideoBatchSampler(keys, batch_size, seed=seed),
+            **loader_kwargs
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=True,
+            **loader_kwargs
+        )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,

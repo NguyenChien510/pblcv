@@ -45,6 +45,10 @@ MOTION_DIRECTIONS_EN = {
     "straight", "forward", "backward", "slowly", "fast", "quickly"
 }
 
+SUBJECT_WORDS_EN = {"man", "woman", "person", "male", "female", "guy", "lady", "boy", "girl"}
+MOTION_WORDS_EN = MOTION_VERBS_EN | MOTION_DIRECTIONS_EN
+APPEARANCE_WORDS_EN = (CLOTHING_ITEMS_EN | COLORS_EN | APPEARANCE_TRAITS_EN) - SUBJECT_WORDS_EN
+
 # Rule-based vocabulary for Vietnamese
 MOTION_VERBS_VI = {
     "đi", "đi_bộ", "chạy", "quay", "ngoái", "rẽ", "bước", "xách", "cầm", "mang",
@@ -61,9 +65,13 @@ class TextDecomposer:
       2. Q_mot: Motion Sub-prompt (Actions, direction, movement dynamics)
       3. Concepts: Dictionary of extracted visual and dynamic tokens for academic explainability
     """
-    def __init__(self, language: str = "en", llm_cache: Optional[Dict[str, Dict[str, str]]] = None):
+    def __init__(self, language: str = "en", llm_cache: Optional[Dict[str, Dict[str, str]]] = None,
+                 mode: str = "keyword"):
         self.language = language.lower()
         self.llm_cache = llm_cache or {}
+        # "keyword" (default, original): Q_app / Q_mot are lists of dictionary words.
+        # "clause" (recipe m3): Q_app / Q_mot keep whole clauses of the caption, routed by dictionary words.
+        self.mode = mode
 
     def extract_concepts(self, text: str) -> Dict[str, Any]:
         """
@@ -133,8 +141,34 @@ class TextDecomposer:
             item = self.llm_cache[text_clean]
             return item.get("Q_app", text_clean), item.get("Q_mot", text_clean)
 
+        if self.mode == "clause" and self.language != "vi":
+            return self._decompose_clauses(text_clean)
         concepts = self.extract_concepts(text_clean)
         return concepts["q_app"], concepts["q_mot"]
+
+    def _decompose_clauses(self, text: str) -> Tuple[str, str]:
+        """Recipe m3: whole clauses instead of keyword bags, so 'short black hair' and 'a book in her hand' survive.
+        A clause with a motion word goes to Q_mot, one with an appearance word to Q_app (it may go to both);
+        a clause with neither goes to Q_app. Words are matched as whole words, not substrings."""
+        words_all = re.findall(r"\b[a-zA-Z_\-]+\b", text.lower())
+        subject = next((w for w in words_all if w in SUBJECT_WORDS_EN), "person")
+        clauses = re.split(r"[.;,]|\b(?:while|and then|then)\b", text, flags=re.IGNORECASE)
+        app_clauses, mot_clauses = [], []
+        for clause in clauses:
+            c = clause.strip()
+            if not c:
+                continue
+            words = set(re.findall(r"\b[a-zA-Z_\-]+\b", c.lower()))
+            is_mot = bool(words & MOTION_WORDS_EN)
+            is_app = bool(words & APPEARANCE_WORDS_EN)
+            if is_mot:
+                mot_clauses.append(c)
+            if is_app or not is_mot:
+                app_clauses.append(c)
+        q_app = f"A {subject}: {'; '.join(app_clauses)}" if app_clauses else f"A photo of a {subject}: {text}"
+        q_mot = f"A video of a {subject}: {'; '.join(mot_clauses)}" if mot_clauses \
+            else f"A video of a {subject} walking and moving: {text}"
+        return q_app, q_mot
 
     def _decompose_en(
         self,

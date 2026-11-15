@@ -54,19 +54,28 @@ class DAMRModel(nn.Module):
 
         # 2. Spatio-Temporal Video Encoder (Divided Space-Time ViT, 768-D)
         load_spatial = kwargs.get("pretrained_vit", pretrained_vit)
-        self.video_encoder = SpaceTimeViT(
-            img_size=img_size,
-            patch_size=16,
-            num_frames=motion_frame_num,
-            embed_dim=embed_dim,
-            depth=vit_depth,
-            num_heads=vit_heads,
-            drop_rate=drop_rate,
-            pretrained=load_spatial
-        )
+        self.backbone = kwargs.get("backbone", "spacetime")
+        if self.backbone == "mfgf":
+            from .mfgf_video import MFGFVideoEncoder
+            self.video_encoder = MFGFVideoEncoder(embed_dim=embed_dim, drop_rate=drop_rate, pretrained=load_spatial,
+                                                 use_temporal_attn=kwargs.get("use_temporal_attn", True))
+        else:
+            self.video_encoder = SpaceTimeViT(
+                img_size=img_size,
+                patch_size=16,
+                num_frames=motion_frame_num,
+                embed_dim=embed_dim,
+                depth=vit_depth,
+                num_heads=vit_heads,
+                drop_rate=drop_rate,
+                pretrained=load_spatial,
+                use_temporal_attn=kwargs.get("use_temporal_attn", True),
+                s3d_motion=kwargs.get("s3d_motion", False),
+                pretrained_s3d=load_spatial
+            )
 
         # 3. Orthogonality Loss
-        self.mim_loss_layer = MutualInformationMinimizationLoss()
+        self.mim_loss_layer = MutualInformationMinimizationLoss(mode=kwargs.get("mim_mode", "raw") or "raw")
 
     def encode_text(
         self,

@@ -15,9 +15,13 @@ class MutualInformationMinimizationLoss(nn.Module):
     """
     Computes cosine-orthogonality MIM Loss between disentangled streams.
     """
-    def __init__(self, eps: float = 1e-8):
+    def __init__(self, eps: float = 1e-8, mode: str = "raw"):
         super().__init__()
         self.eps = eps
+        # "raw" (default): |cos(V_app, V_mot)|. "centered" (recipe m3): the batch mean of each stream is removed
+        # first, so only the sample-specific parts are pushed apart (the shared offset that both InfoNCE terms need
+        # to match similar texts is left alone).
+        self.mode = mode
 
     def forward(
         self,
@@ -37,6 +41,9 @@ class MutualInformationMinimizationLoss(nn.Module):
         """
         v_app_n = F.normalize(V_app, p=2, dim=-1)
         v_mot_n = F.normalize(V_mot, p=2, dim=-1)
+        if self.mode == "centered" and v_app_n.size(0) > 1:
+            v_app_n = F.normalize(v_app_n - v_app_n.mean(dim=0, keepdim=True), p=2, dim=-1, eps=self.eps)
+            v_mot_n = F.normalize(v_mot_n - v_mot_n.mean(dim=0, keepdim=True), p=2, dim=-1, eps=self.eps)
 
         # Video orthogonality penalty: |<v_app, v_mot>|
         video_overlap = torch.abs(torch.sum(v_app_n * v_mot_n, dim=-1)) # [B]
