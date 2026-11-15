@@ -1,0 +1,12 @@
+# DOMAIN = "demo.example.com" (automatic HTTPS) or ":80" (plain HTTP, e.g. local test)
+{$DOMAIN}
+
+basic_auth {
+	{$AUTH_USER} {$AUTH_HASH}
+}
+
+request_body {
+	max_size 300MB
+}
+
+reverse_proxy app:8000

@@ -38,6 +38,9 @@ python test.py --sub_dataset TVPReid-PRID --query "A man in a dark grey jacket w
 
 # Web demo (FastAPI + static UI); sample videos are read from ./samples by default
 python web_demo.py --port 8000 --no-browser --samples_dir samples
+
+# Deploy (Docker + Caddy basic auth; model weights are mounted from ./checkpoints, not baked in). See INSTALL.md.
+cd deploy && cp .env.example .env && docker compose up -d --build
 ```
 
 If there are no captions under the data root, `TVPRDataset` silently builds a dummy index (32 train / 16 val samples). That is fine for a smoke test, but if metrics look meaningless, check this first.
