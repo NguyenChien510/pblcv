@@ -7,7 +7,7 @@ Triển khai hoàn chỉnh kiến trúc mô hình **SpaceTime-DSCA (Divided Spac
 ## 1. Cơ Sở Khoa Học: Chuyển Dịch Từ CLIP Sang Kiến Trúc Thuần ViT + BERT
 
 ### 1.1. Tại sao loại bỏ CLIP Pretrained để đảm bảo tính công bằng học thuật (Fair Comparison)?
-Trong bài báo nền tảng **MFGF (ACM MM '24, `rootpaper.pdf`)**, tác giả sử dụng kiến trúc chuẩn gồm **Vision Transformer (ViT)** kết hợp **S3D (Separable 3D-CNN)** và **BERT Text Encoder** được huấn luyện trực tiếp trên tập dữ liệu TVPR, đạt Rank@1 là **35.2%** trên `TVPReid-PRID`.
+Trong bài báo nền tảng **MFGF (ACM MM '24, `rootpaper.pdf`)**, tác giả sử dụng kiến trúc chuẩn gồm **Vision Transformer (ViT)** kết hợp **S3D (Separable 3D-CNN)** và **BERT Text Encoder** được huấn luyện trực tiếp trên tập dữ liệu TVPR, đạt Rank@1 trên tập test lần lượt **32,3% / 30,0% / 35,2%** trên `TVPReid-PRID` / `TVPReid-iLIDs` / `TVPReid-Duke`.
 
 Khi một nghiên cứu sử dụng **OpenAI CLIP** (`openai/clip-vit-base-patch16` đã pre-train trên 400 triệu cặp Text-Image ngoài luồng):
 1. **Bị hội đồng bình duyệt (Reviewers) đặt nghi vấn**: Rất khó chứng minh sự vượt trội đến từ *đóng góp kiến trúc đề xuất* hay chỉ đơn thuần là hưởng lợi từ tập dữ liệu khổng lồ 400M ảnh của OpenAI.
@@ -59,202 +59,195 @@ Một mô hình Text-to-Video Person Retrieval xuất sắc **không được ph
 
 ---
 
-## 3. Kiến Trúc Mô Hình SpaceTime-DSCA Đề Xuất
+## 3. Kiến Trúc Mô Hình SpaceTime-DSCA
 
-```
-                        ┌────────────────────────────────────────────────────────┐
-                        │      Text Query Q (e.g. "A man in black coat carrying  │
-                        │                 a backpack walking to the left")       │
-                        └───────────────────────────┬────────────────────────────┘
-                                                    │
-                                                    ▼
-                                    ┌───────────────────────────────┐
-                                    │ DSCA Text Concept Decomposer  │
-                                    │ (Structured Semantic Parsing) │
-                                    └───────┬───────────────┬───────┘
-                                            │               │
-                     ┌──────────────────────┴────────┐      └──────────────────────┐
-                     ▼ Q_app (Appearance Prompt)     │                             ▼ Q_mot (Motion Prompt)
-       ┌─────────────────────────────┐               │              ┌─────────────────────────────┐
-       │   BERT Text Encoder (768-D) │               │              │   BERT Text Encoder (768-D) │
-       └──────────────┬──────────────┘               │              └──────────────┬──────────────┘
-                      ▼ T_app                        │                             ▼ T_mot
-                      │                              ▼ T_full                      │
-                      │                ┌─────────────────────────────┐             │
-                      │                │   BERT Text Encoder (768-D) │             │
-                      │                └──────────────┬──────────────┘             │
-                      │                               │                            │
- ═════════════════════╪═══════════════════════════════╪════════════════════════════╪═════════════════════════
-  LOSS: L_total = L_joint(T_full, V_video) + 0.5*L_app(T_app, V_app) + 0.25*L_mot(T_mot, V_mot) + 0.1*L_MIM
- ═════════════════════╪═══════════════════════════════╪════════════════════════════╪═════════════════════════
-                      │                               │                            │
-                      ▼                               ▼                            ▼
-                 ┌─────────┐                     ┌─────────┐                  ┌─────────┐
-                 │  V_app  │                     │ V_video │                  │  V_mot  │
-                 └────┬────┘                     └────┬────┘                  └────┬────┘
-                      │                               │                            │
-                      └───────────────────────┬───────┴────────────────────────────┘
-                                              │
-                                  ┌───────────┴───────────┐
-                                  │   MLP Fusion Stream   │
-                                  │   Norm(MLP([V_a,V_m]))│
-                                  └───────────┬───────────┘
-                                              │
-                            ┌─────────────────┴─────────────────┐
-                            │   Divided Space-Time Transformer  │
-                            │      (TimeSformer Architecture)   │
-                            │  - Temporal Multi-head Attention  │
-                            │  - Spatial Multi-head Attention   │
-                            │  - ImageNet-1K Spatial Pretrain   │
-                            └─────────────────┬─────────────────┘
-                                              │
-                            ┌─────────────────┴─────────────────┐
-                            │ 2D Patch Embed + Space-Time Pos   │
-                            └─────────────────┬─────────────────┘
-                                              │
-                            ┌─────────────────┴─────────────────┐
-                            │ Input Video Clip (T=16, 224x224)  │
-                            └───────────────────────────────────┘
-```
+![SpaceTime-DSCA framework](reports/framework_v2.png)
 
-### ① Divided Space-Time Transformer Backbone (`SpaceTimeViT`)
-* **Spatial Multi-Head Attention**: Tận dụng trọng số nạp trước từ ImageNet-1K (`google/vit-base-patch16-224`) trên 12 attention heads để nắm bắt tức thì hình thái trang phục, logo, màu sắc.
-* **Temporal Multi-Head Attention**: Khối tự chú ý theo trục thời gian được khởi tạo trọng số 0 (*Zero-Initialization* tại tầng chiếu `out_proj`), đảm bảo giai đoạn đầu không phá hủy đặc trưng không gian đã pre-train.
-* **Tách luồng đặc trưng độc lập (Disentangled Video Heads)**:
-  - **Appearance Stream ($V_{app}$)**: Dynamic Attention Pooling trích xuất khung hình tiêu biểu rõ nét nhất.
-  - **Motion Stream ($V_{mot}$)**: Mạng Bidirectional GRU mô hình hóa biến thiên quỹ đạo và góc nhìn.
-  - **Fused Video Stream ($V_{video}$)**: Hợp nhất đặc trưng toàn diện $\text{Norm}(\text{MLP}([V_{app}, V_{mot}]))$.
+Hình trên vẽ đúng cấu hình đã cho ra mọi số liệu ở Mục 4–5: backbone video `mfgf` với recipe `m3`. Nguồn của hình là `reports/framework_v2.html`; mở file đó bằng Chrome để sửa rồi chụp lại. Code còn giữ backbone cũ `spacetime` (mặc định khi không truyền `--backbone`), mô tả ở cuối mục này.
 
-### ② Disentangled Semantic Concept Alignment (DSCA Text Stream)
-* Khắc phục hoàn toàn nhược điểm phân tích cú pháp luật cứng (Hard-rule Guided Tips của MFGF) bằng cơ chế **DSCA**:
-  - **$Q_{app}$ (Appearance)**: Tập trung các thuộc tính màu sắc, áo, quần, giày dép, phụ kiện (túi, nón, kính).
-  - **$Q_{mot}$ (Motion)**: Tập trung hành vi, hướng di chuyển (đi về bên trái, rẽ phải, mang vác vật dụng).
-* Mã hóa song song qua BERT để tạo ra bộ ba vector ngữ nghĩa: $T_{full}, T_{app}, T_{mot} \in \mathbb{R}^{768}$.
+Luồng dữ liệu: `data/dataset.py` → `models/damr_main.py::DAMRModel` → `loss/criterion.py::DAMRCriterion`; đánh giá ở `experiments/common.py` và `utils/metrics.py`.
 
-### ③ Hệ Thống Hàm Mất Mát Toàn Diện (Hierarchical DSCA Loss)
-* **$\mathcal{L}_{joint}$ (Căn chỉnh tổng thể đa phương thức)**:
-  $$\mathcal{L}_{joint} = \text{InfoNCE}(T_{full}, V_{video}; \tau=0.07)$$
-* **$\mathcal{L}_{app}$ & $\mathcal{L}_{mot}$ (Căn chỉnh chuyên biệt từng khía cạnh)**:
-  $$\mathcal{L}_{app} = \text{InfoNCE}(T_{app}, V_{app}; \tau=0.07), \quad \mathcal{L}_{mot} = \text{InfoNCE}(T_{mot}, V_{mot}; \tau=0.07)$$
-* **$\mathcal{L}_{MIM}$ (Tối thiểu hóa thông tin tương hỗ, ép trực giao)**:
-  $$\mathcal{L}_{MIM} = \frac{1}{B} \sum_{i=1}^B \frac{|V_{app, i} \cdot V_{mot, i}|}{\|V_{app, i}\| \|V_{mot, i}\|}$$
-* **Tổng hàm mất mát**:
-  $$\mathcal{L}_{total} = \mathcal{L}_{joint} + 0.5 \mathcal{L}_{app} + 0.25 \mathcal{L}_{mot} + 0.1 \mathcal{L}_{MIM}$$
+### ① Nhánh văn bản: DSCA + BERT dùng chung
+* **DSCA Decomposer** (`data/text_decomposer.py`) chạy trong `__getitem__` và không có tham số học. Nó tách caption thành:
+  - $Q_{app}$: các mệnh đề về ngoại hình (màu sắc, quần áo, phụ kiện);
+  - $Q_{mot}$: các mệnh đề về chuyển động (động từ, hướng đi).
+
+  Có hai chế độ:
+  - `keyword` (mặc định): ghép các từ khóa rời;
+  - `clause` (recipe m3): giữ nguyên cả mệnh đề, nên "short black hair" hay "a book in her hand" không bị mất. Một mệnh đề có thể vào cả hai prompt.
+* **Một BERT-base-uncased dùng chung** (`models/text_encoder.py`) mã hóa ba chuỗi: caption gốc → $T_{full}$, $Q_{app}$ → $T_{app}$, $Q_{mot}$ → $T_{mot}$. Cả ba đều lấy token `[CLS]`, 768-D.
+
+### ② Nhánh video: Space-Time ViT + S3D (`models/mfgf_video.py`)
+Mỗi tracklet được lấy mẫu theo hai nhịp. Đầu vào là `[B, 20, 3, 224, 224]`, sinh bởi `frame_layout="mfgf"` trong dataset.
+
+| Luồng | Đầu vào | Bộ mã hóa | Đầu ra |
+| :--- | :--- | :--- | :--- |
+| Appearance | 4 khung rời, trải đều tracklet | Space-Time ViT-B/16, 12 block chia tách (`models/frozen_vit.py`): temporal attention khởi tạo 0, rồi spatial attention khởi tạo ImageNet-21k (timm) | `[CLS]` → head (FC+LN) → $V_{app}$ |
+| Motion | 16 khung liên tiếp (≈15 fps) | S3D, khởi tạo Kinetics-400 (torchvision), BatchNorm đóng băng | đặc trưng 1024-D → head (FC+LN) → $V_{mot}$ |
+| Fused | $[V_{app}; V_{mot}]$ | MLP Fusion | $V_{video}$ |
+
+Tất cả embedding đều 768-D và được chuẩn hóa L2.
+
+Bộ mã hóa video giống MFGF (ViT 4 khung + S3D 16 khung), nên phép so sánh là công bằng. Phần khác biệt nằm ở DSCA, ba luồng căn chỉnh riêng và $\mathcal{L}_{MIM}$.
+
+### ③ Hàm mất mát (`loss/criterion.py`, `models/mim_loss.py`)
+$$\mathcal{L} = \mathcal{L}_{joint}(T_{full}, V_{video}) + \lambda_{app}\,\mathcal{L}_{app}(T_{app}, V_{app}) + \lambda_{mot}\,\mathcal{L}_{mot}(T_{mot}, V_{mot}) + \lambda_{mim}\,\mathcal{L}_{MIM}$$
+
+* Mỗi số hạng $\mathcal{L}_{\cdot}$ là InfoNCE đối xứng (text→video và video→text). Với `--learnable_tau`, nhiệt độ τ được học.
+* Với `--text_pos`, các mẫu trong batch có cùng chuỗi $Q_{app}$/$Q_{mot}$ được tính là positive. Không làm vậy thì các $Q_{mot}$ gần trùng nhau ("A video of a woman walking") bị phạt như mẫu âm.
+* $\mathcal{L}_{MIM} = \frac{1}{B}\sum_i |\cos(V_{app,i}, V_{mot,i})|$ chỉ áp lên phía video. Với `--mim_mode centered`, trung bình batch được trừ trước khi tính cosine, để chỉ phần riêng của từng mẫu bị ép trực giao.
+* Hệ số mặc định lấy từ `configs/default.yaml` (λ_app 0.5, λ_mot 0.25, λ_mim 0.1); đổi bằng `--lambda_app`, `--lambda_mot`, `--lambda_mim`.
+
+### ④ Chấm điểm khi truy hồi
+$$s(Q, V) = w_1\cos(T_{full}, V_{video}) + w_2\cos(T_{app}, V_{app}) + w_3\cos(T_{mot}, V_{mot})$$
+
+Bộ trọng số $(w_1, w_2, w_3)$ được tìm bằng lưới (`--grid_step 0.1` với m3) **trên tập validation** của từng lần chạy. Tập test chỉ chấm một lần với bộ trọng số đã chọn.
+
+Gallery được khử trùng lặp theo `video_id`, vì mỗi video có 2 caption. Giao thức MFGF dùng 1 caption/video, với gallery test gồm 142 (PRID), 75 (iLIDs) và 603 (Duke) video.
+
+### ⑤ Các recipe huấn luyện (`experiments/plan.py`)
+
+| Recipe | Nội dung |
+| :--- | :--- |
+| `m2s` | `--backbone mfgf` + cờ v2 (`--unique_video_batches --learnable_tau --weight_decay 0.05 --select_metric mean_r1_5_10`); mỗi tập con train riêng như MFGF |
+| `m3` | `m2s` + `--clip_flip --text_pos --dsca_mode clause --temporal_head_lr --mim_mode centered --ema 0.99` (lý do của từng cờ: `experiments/kaggle/HUONG_DAN_M3.md`) |
+| `m3j` | `m3`, nhưng train chung trên `all` 6 epoch rồi fine-tune từng tập con |
+| `m3c` | `m3j` có thêm bước pre-train text–image trên CUHK-PEDES (`experiments/pretrain_cuhk.py`). **Đây là dữ liệu ngoài**, nên phải ghi rõ khi so với MFGF |
+
+### Backbone cũ `spacetime` (`models/spacetime_vit.py`)
+Đây là ViT kiểu TimeSformer với 6 block, 16 khung đều nhau, spatial layer nạp ImageNet-1K. Các luồng ra:
+- $V_{app}$ = attention pooling theo thời gian;
+- $V_{mot}$ = Bi-GRU;
+- $V_{video}$ = MLP fusion.
+
+Backbone này dùng cho các run v1/v2. Nó kém hơn `mfgf` (PRID v2: test R@1 38,7) nên không còn là cấu hình chính. `test.py` vẫn dựng cứng kiến trúc này; với checkpoint `mfgf`, hãy dùng `experiments/run_revision.py` hoặc web demo, vì hai công cụ này đọc kiến trúc từ checkpoint.
 
 ---
 
-## 4. Nghiên Cứu Thành Phần Độc Lập (Ablation Studies)
+## 4. Ablation (`TVPReid-PRID`, recipe m3, tập test, giao thức MFGF)
 
-Trong nghiên cứu khoa học, **Ablation Study** là bước bắt buộc để chứng minh rằng: *Sự gia tăng hiệu năng thực sự đến từ các module cải tiến được đề xuất, chứ không phải do may mắn hay chỉnh siêu tham số ngẫu nhiên.*
+Mọi con số dưới đây được tính lại từ `results/v8` và `results/v9` (`results/v*/results/runs/TVPReid-PRID/*.json`). Đơn vị là R@K (%). Tập test có 142 truy vấn, nên mỗi truy vấn ≈ 0,7 điểm.
 
-### 4.1. Bảng Tổng Hợp Kết Quả Thực Nghiệm Ablation (trên `TVPReid-PRID`)
+### 4.1. Bỏ từng thành phần (leave-one-out)
 
-| # | Cấu hình Thử nghiệm | Rank@1 (%) | Rank@5 (%) | Rank@10 (%) | MdR ↓ |
-| :-: | :--- | :---: | :---: | :---: | :---: |
-| 1 | Baseline (Spatial ViT Scratch + BERT Full Text, Frame Avg) | 12.68 | 32.39 | 45.07 | 12.0 |
-| 2 | + Pretrained ImageNet-1K Spatial Initialization | 22.54 | 52.11 | 64.79 | 5.0 |
-| 3 | + Divided Space-Time Attention (TimeSformer Backbone) | 30.99 | 66.20 | 77.46 | 3.0 |
-| 4 | + DSCA Text Decomposition ($Q_{app}, Q_{mot}$) | 37.32 | 74.65 | 85.92 | 2.0 |
-| 5 | + Orthogonal MIM Loss ($\mathcal{L}_{MIM}$ ép trực giao) | 40.14 | 78.87 | 88.73 | 2.0 |
-| 6 | **Full Model SpaceTime-DSCA (Đầy đủ Multi-level Scoring)** | **43.66** | **81.69** | **90.14** | **2.0** |
+| Cấu hình | Seed 42: R@1 / R@5 / R@10 / MdR | Seed 1234: R@1 / R@5 / R@10 / MdR |
+| :--- | :---: | :---: |
+| **Full (m3)** | **57,7** / 83,8 / 92,3 / 1 | **59,2** / 87,3 / 94,4 / 1 |
+| − pretrained init | 16,9 / 49,3 / 64,8 / 6 | – |
+| − temporal attention | 45,8 / 76,8 / 88,0 / 2 | 57,7 / 85,9 / 92,3 / 1 |
+| − DSCA (T_app = T_mot = T_full) | 52,8 / 83,1 / 93,0 / 1 | 58,5 / 89,4 / 96,5 / 1 |
+| − L_MIM | 51,4 / 82,4 / 91,5 / 1 | 56,3 / 86,6 / 95,1 / 1 |
 
----
+### 4.2. Cộng dồn (seed 42)
 
-### 4.2. Phân Tích Chuyên Sâu Từng Thành Phần Ablation
+| Bước | R@1 | R@5 | R@10 | MdR |
+| :--- | :---: | :---: | :---: | :---: |
+| cum1: baseline (ViT khởi tạo ngẫu nhiên, chỉ T_full) | 12,7 | 44,4 | 59,2 | 7 |
+| cum2: + pretrained init | 53,5 | 83,1 | 90,8 | 1 |
+| cum3: + divided space-time attention | 55,6 | 84,5 | 90,1 | 1 |
+| + DSCA (= no_mim) | 51,4 | 82,4 | 91,5 | 1 |
+| + L_MIM (= full) | 57,7 | 83,8 | 92,3 | 1 |
 
-#### A. Khảo sát Mô hình hóa Thời gian (Time Modeling: SpaceTime Attention vs Frame Averaging)
-* **Thực nghiệm**: Thay thế khối *Divided Space-Time Attention* bằng cách chạy Spatial ViT độc lập trên từng frame rồi lấy trung bình cộng (Average Pooling).
-* **Kết quả & Ý nghĩa**: Rank@1 giảm sút **8.45%** (từ 30.99% xuống 22.54%). 
-* **Giải thích**: Frame Averaging làm mất hoàn toàn thứ tự thời gian và biến thiên góc nhìn. Khối *Temporal Multi-head Self-Attention* giúp các token tương tác qua chuỗi 16 khung hình, phát hiện các chi tiết bị che khuất tạm thời (*Temporal Occlusion Recovery*).
-
-#### B. Khảo sát Cơ chế Phân rã Khái niệm Ngữ nghĩa (DSCA vs Full Text vs Hard Rules)
-* **Thực nghiệm**:
-  - *Full Text Only*: Chỉ sử dụng 1 vector $T_{full}$.
-  - *Hard-rule Parsing (MFGF Baseline)*: Dùng luật gán nhãn từ loại NLTK (dễ sai khi gặp câu mô tả phức tạp).
-  - *DSCA (Đề xuất)*: Tách ngữ nghĩa thành $Q_{app}$ và $Q_{mot}$ có cấu trúc.
-* **Kết quả & Ý nghĩa**: Khi bổ sung DSCA, Rank@1 tăng vọt từ **30.99% lên 37.32% (+6.33%)**.
-* **Giải thích**: Người tìm kiếm thường mô tả cả ngoại hình (*"áo khoác đen"*) lẫn hành vi (*"đang rẽ trái"*). Tách rời 2 khía cạnh giúp mô hình không bị thiên lệch (*bias*) hoàn toàn vào màu áo mà bỏ qua thông tin hành động.
-
-#### C. Khảo sát Vai trò của Hàm Mất Mát Ép Trực Giao MIM ($\mathcal{L}_{MIM}$)
-* **Thực nghiệm**: Huấn luyện mô hình khi đặt trọng số $\lambda_{MIM} = 0$.
-* **Kết quả & Ý nghĩa**: Thiếu $\mathcal{L}_{MIM}$, Rank@1 tụt từ **43.66% xuống 37.32% (-6.34%)**.
-* **Giải thích**: Nếu không có ràng buộc trực giao $V_{app} \perp V_{mot}$, mạng nơ-ron có xu hướng chọn con đường dễ nhất: cả nhánh $V_{app}$ và $V_{mot}$ đều học lại đặc trưng màu sắc trang phục (vì màu sắc dễ phân biệt hơn chuyển động). Hàm $\mathcal{L}_{MIM}$ triệt tiêu thông tin dư thừa, bắt buộc $V_{mot}$ phải tập trung vào động lực học không-thời gian.
-
-#### D. Khảo sát Trọng số Chấm điểm Đa Tầng khi Truy vấn (Inference Scoring Fusion)
-* Điểm tương đồng được tính theo công thức:
-  $$\text{Score}(Q, V) = w_1 \cdot \text{Sim}(T_{full}, V_{video}) + w_2 \cdot \text{Sim}(T_{app}, V_{app}) + w_3 \cdot \text{Sim}(T_{mot}, V_{mot})$$
-* **Khảo sát trọng số**:
-  - $w_1=1.0, w_2=0.0, w_3=0.0$ (Chỉ dùng Global): Rank@1 = 38.03%, Rank@5 = 76.06%.
-  - $w_1=0.6, w_2=0.4, w_3=0.0$ (Bỏ qua Motion): Rank@1 = 40.85%, Rank@5 = 78.87%.
-  - **$w_1=0.50, w_2=0.35, w_3=0.15$ (Tối ưu đề xuất)**: **Rank@1 = 43.66%, Rank@5 = 81.69%**.
-* **Kết luận**: Nhánh Appearance đóng góp lớn nhất vào nhận diện danh tính, nhưng nhánh Motion đóng vai trò quyết định trong việc phân định các ca khó có trang phục tương tự nhau.
-
-#### E. Khảo sát Giao Thức Đánh Giá: Gallery Deduplication (Phát hiện lỗi kinh điển)
-* **Vấn đề**: Trong tập `TVPReid`, mỗi người có 2 câu mô tả, do đó dataloader ban đầu nạp $N_g = 142$ video (thực chất chỉ có 71 video độc lập, mỗi video lặp 2 lần).
-* **Hậu quả khi không deduplicate**: Mỗi video âm tính chiếm 2 vị trí trong bảng xếp hạng. Rank@5 thực chất chỉ tương đương Rank@2.5, khiến Rank@5 bị kẹt dưới 50%.
-* **Giải pháp chuẩn hóa quốc tế**: Deduplicate Gallery theo `video_id` ($N_g = 71$ trên PRID, $37$ trên iLIDs, $302$ trên Duke). Kết quả: Rank@5 ngay lập tức nhảy vọt từ **48% lên 81.69%** và Median Rank tụt xuống **2.0**.
+### 4.3. Đọc kết quả một cách trung thực
+* Mô hình full cao nhất ở R@1 trong mọi cặp bỏ-một-thành-phần, ở cả hai seed. Nhưng ở R@5/R@10, `no_dsca` và `no_mim` có lúc cao hơn full.
+* Chỉ khoảng cách **no_temporal ở seed 42** có khoảng tin cậy bootstrap ghép cặp không chứa 0 (+3,5 đến +21,1). Các khoảng cách ở seed 1234 (0,7–2,8 điểm) đều nằm trong nhiễu.
+* Nhiễu giữa các lần chạy lớn: cùng seed 42 và cùng code, PRID full ra 52,8 ở Kaggle v1 và 57,7 ở v2.
+* Ở bảng cộng dồn, bước "+DSCA" làm R@1 giảm (55,6 → 51,4). Chỉ khi thêm L_MIM, R@1 mới lên mức cao nhất.
 
 ---
 
-## 5. Bảng So Sánh Đối Đầu Với Paper Gốc MFGF (ACM MM '24)
+## 5. So Sánh Với MFGF (ACM MM '24) — tập test, giao thức MFGF
 
-### Kết quả trên benchmark `TVPReid-PRID`:
+Định dạng ô: R@1 / R@5 / R@10 / R@50 / MdR. Trung bình được lấy qua các seed.
 
-| Chỉ số Đánh giá | Paper Gốc MFGF (ACM MM '24) | SpaceTime-DSCA (Của bạn) | Chênh lệch Vượt trội |
-| :--- | :---: | :---: | :---: |
-| **Rank@1** | 35.2% | **43.66%** | **+8.46%** 🚀 |
-| **Rank@5** | 71.7% | **81.69%** | **+9.99%** 🚀 |
-| **Rank@10** | 83.1% | **90.14%** | **+7.04%** 🚀 |
-| **Rank@50** | 97.2% | **99.30%** | **+2.10%** 🚀 |
-| **Median Rank (MdR) ↓** | 3.0 | **2.0** | **-1.0** (Top-2 trung vị) |
+| Tập con | MFGF | SpaceTime-DSCA | Recipe, số seed | Nguồn |
+| :--- | :---: | :---: | :--- | :--- |
+| PRID | 32,3 / 76,3 / 85,1 / 100 / 2 | **58,5** / **85,6** / **93,4** / 99,3 / 1 | m3, 2 seed (42, 1234) | `results/v8` |
+| iLIDs | 30,0 / **71,7** / **91,7** / 100 / 4,7 | **38,2** / 69,8 / 84,9 / 100 / 2,3 | m3c, 3 seed (chọn trên val) ¹ | `results/v8` |
+| Duke | 35,2 / 62,2 / 84,0 / 90,4 / 3 | **47,6** / **75,6** / **84,5** / **94,5** / 2 | m2s, 3 seed | `results/v6` |
 
-### So sánh kiến trúc kỹ thuật:
+¹ m3c dùng pre-train CUHK-PEDES (dữ liệu ngoài). Hai lựa chọn không dùng dữ liệu ngoài trên iLIDs:
+- m3j: 41,3 / 69,8 / 84,0 (3 seed);
+- m3: 32,9 / 63,6 / 81,3 (3 seed).
 
-| Tiêu chí | **MFGF Baseline (`rootpaper.pdf`)** | **SpaceTime-DSCA (Đề Xuất)** |
+Quy tắc chọn trên val đã chọn m3c (val 85,74 so với m3j 84,38, `results/ilids_m3c_selection.json`).
+
+**Hạn chế còn lại:**
+- R@5 và R@10 của iLIDs vẫn thấp hơn MFGF ở mọi cấu hình đã thử.
+- Duke chưa được chạy với m3.
+- Các giá trị iLIDs của MFGF là bội số của 1/60 và MdR lẻ, nên nhiều khả năng là trung bình của nhiều lần chạy. Bài MFGF không công bố code để kiểm chứng.
+
+| Tiêu chí | MFGF | SpaceTime-DSCA |
 | :--- | :--- | :--- |
-| **Kiến trúc Video** | ViT (4 frames) + S3D 3D-CNN (16 frames) tách rời | **Unified Divided Space-Time ViT (16 frames)** |
-| **Mô hình hóa thời gian** | 3D Convolution tách lớp ($1 \times k \times k$ và $k \times 1 \times 1$) | **Temporal Multi-Head Self-Attention + Bi-GRU** |
-| **Xử lý Văn bản** | BERT + NLTK phân tích ngữ pháp luật cứng ($D^2$ Tips) | **DSCA End-to-End Multimodal Alignment** |
-| **Phân tách Đặc trưng** | Ghép thô `concat(f_vis, f_mot)` không ràng buộc độc lập | **Ép trực giao toán học $V_{app} \perp V_{mot}$ qua MIM Loss** |
-| **Tài nguyên VRAM** | Nặng VRAM do tầng 3D Conv của S3D | **Nhẹ hơn 40% VRAM, tốc độ huấn luyện nhanh gấp 2.2x** |
+| Bộ mã hóa video | Frozen-in-Time ViT (4 khung) + S3D (16 khung) | Như MFGF (backbone `mfgf`) |
+| Văn bản | BERT + gợi ý luật NLTK ($D^2$ tips) | BERT dùng chung + DSCA tách $Q_{app}$ / $Q_{mot}$ theo mệnh đề |
+| Căn chỉnh | Ghép đặc trưng hình ảnh và chuyển động | 3 InfoNCE riêng (joint / app / mot) + ép trực giao $V_{app} \perp V_{mot}$ |
+| Chấm điểm | Một điểm toàn cục | Tổng có trọng số của 3 cosine, trọng số chọn trên val |
 
 ---
 
-## 6. Hướng Dẫn Sử Dụng & Huấn Luyện
+## 6. Hướng Dẫn Sử Dụng
 
-> 🚀 **Cài đặt từ đầu và chạy Web Demo trên Windows** (kèm tải checkpoint): xem **[INSTALL.md](INSTALL.md)**.
+> Cài đặt (Linux/Windows), tải checkpoint, chạy web demo và deploy bằng Docker: xem **[INSTALL.md](INSTALL.md)**.
 
-### 6.1. Huấn luyện mô hình từ đầu
+Dữ liệu được tìm theo thứ tự `--data_root`, rồi biến môi trường `DATA_ROOT`, rồi `../dataset`, `./dataset`, `/content/dataset`… Mỗi tập con cần có thư mục `captions/` chứa `train.csv`, `val.csv`, `test.csv` (cột `video_id`) và các file `*.json`. **Nếu không tìm thấy caption, dataset sẽ âm thầm tạo dữ liệu giả** (32 train / 16 val); số liệu vô nghĩa thì kiểm tra điều này trước.
+
+### 6.1. Huấn luyện
 ```bash
-# Huấn luyện trên TVPReid-PRID
-python train.py --sub_dataset TVPReid-PRID --epochs 35 --lr 0.0001 --batch_size 16
+# Recipe m3 trên PRID, đúng như run trong bảng (seed 42)
+PBL_NO_FROZEN=1 python train.py --sub_dataset TVPReid-PRID --tag m3_seed42 --seed 42 --backbone mfgf \
+    --unique_video_batches --learnable_tau --weight_decay 0.05 --select_metric mean_r1_5_10 \
+    --clip_flip --text_pos --dsca_mode clause --temporal_head_lr --mim_mode centered --ema 0.99
 
-# Huấn luyện trên TVPReid-iLIDs
-python train.py --sub_dataset TVPReid-iLIDs --epochs 35 --lr 0.0001 --batch_size 16
+# Tiếp tục một run bị ngắt
+python train.py --sub_dataset TVPReid-PRID --tag m3_seed42 --resume latest
 
-# Huấn luyện trên TVPReid-Duke
-python train.py --sub_dataset TVPReid-Duke --epochs 35 --lr 0.0001 --batch_size 16
+# Ablation: thêm --no_temporal_attn, --no_dsca, --lambda_mim 0 hoặc --no_pretrained_vit
+```
+Checkpoint được lưu ở `checkpoints/<tập con>/<tag>/{best,latest}.pth`, lịch sử train ở `reports/<tập con>/`. Backbone `mfgf` tải trọng số ViT timm và S3D torchvision ở lần đầu. `PBL_NO_FROZEN=1` bỏ qua checkpoint Frozen-in-Time (2 GB, server Oxford hay timeout) và dùng ViT ImageNet-21k; mọi run trong bảng đều chạy như vậy.
+
+### 6.2. Toàn bộ quy trình thực nghiệm (nhiều seed, ablation, bảng cho bài báo)
+```bash
+python experiments/run_revision.py --stage train  --recipe m3 --subs TVPReid-PRID --seeds 42 1234 --data_root ../dataset
+python experiments/run_revision.py --stage encode --recipe m3 --data_root ../dataset
+python experiments/run_revision.py --stage eval   --recipe m3 --grid_step 0.1   # chọn trọng số trên val, chấm test một lần
+python experiments/run_revision.py --stage aggregate
+```
+`--dry_run` in ra các lệnh sẽ chạy mà không thực thi. Chi tiết ở `experiments/README.md`. Notebook Kaggle 2×T4 nằm ở `experiments/kaggle/`.
+
+### 6.3. Đánh giá nhanh bằng `test.py` (chỉ dành cho checkpoint backbone `spacetime`)
+```bash
+python test.py --sub_dataset TVPReid-PRID --checkpoint checkpoints/TVPReid-PRID/best.pth --confusion_matrix --cm_size 10
+python test.py --sub_dataset TVPReid-PRID --sweep                         # quét trọng số fusion / TTA / hubness
+python test.py --sub_dataset TVPReid-PRID --query "A man in a dark grey jacket walking away"
+python test.py --sub_dataset TVPReid-PRID --dashboard                     # vẽ lại dashboard từ lịch sử train
 ```
 
-### 6.2. Đánh giá lại & Xuất Ma trận Nhầm lẫn (Confusion Matrix) chuẩn Paper
+### 6.4. Web demo
 ```bash
-python test.py \
-    --sub_dataset TVPReid-PRID \
-    --checkpoint checkpoints/TVPReid-PRID/best.pth \
-    --confusion_matrix \
-    --cm_size 10
+python web_demo.py --port 8000 --samples_dir samples
 ```
+Web demo gồm hai bước:
+1. **Phân tích** (chạy một lần cho mỗi video): YOLO + BoT-SORT bám người, model re-ID tách và nối các tracklet, rồi mã hóa từng tracklet bằng DSCA.
+2. **Tìm kiếm** (chạy cho mỗi câu truy vấn).
 
-Các file báo cáo sẽ tự động được lưu trong thư mục `reports/TVPReid-PRID/`:
-* `confusion_matrix_similarity.png`: Ma trận nhiệt tương đồng Cosine Similarity (khổ chuẩn paper).
-* `confusion_matrix_top1_identity.png`: Ma trận nhầm lẫn định danh Top-1 Identity (%).
-* `confusion_matrix_combined.png`: Biểu đồ ghép 2-trong-1 độ phân giải cao (250 DPI).
-* `retrieval_confusion_report.json`: Báo cáo chi tiết các truy vấn bị nhầm lẫn phục vụ phân tích định tính.
+Ngoài điểm DSCA, demo còn kiểm tra các thuộc tính hỏi trong câu (giới tính, màu áo/quần, túi, balo, mũ) bằng model thuộc tính OpenVINO, và cộng thêm một nhánh CLIP ẩn có trọng số 0,2. Nhánh CLIP chỉ có trong demo, không dùng cho số liệu bài báo.
 
-### 6.3. Truy vấn tìm kiếm đơn lẻ (Single-Query Inference)
-```bash
-python test.py \
-    --sub_dataset TVPReid-PRID \
-    --checkpoint checkpoints/TVPReid-PRID/best.pth \
-    --query "A man in a dark grey jacket and black trousers walking away"
-```
+Checkpoint khuyến nghị là `best.pth` ở [release v2.0](https://github.com/NguyenChien510/pblcv/releases/tag/v2.0), tức recipe m3c; xem INSTALL.md. Chi tiết kiến trúc web xem `CLAUDE.md`.
+
+---
+
+## 7. Cấu Trúc Thư Mục
+
+| Đường dẫn | Nội dung |
+| :--- | :--- |
+| `train.py`, `test.py` | Huấn luyện, đánh giá nhanh |
+| `configs/default.yaml` | Siêu tham số mặc định (cờ CLI ghi đè) |
+| `data/` | `dataset.py` (lấy mẫu khung, hai layout `uniform`/`mfgf`), `text_decomposer.py` (DSCA) |
+| `models/` | `damr_main.py` (DAMRModel), `text_encoder.py`, `mfgf_video.py` + `frozen_vit.py` (backbone chính), `spacetime_vit.py` (backbone cũ), `mim_loss.py` |
+| `loss/criterion.py` | InfoNCE ×3 + L_MIM |
+| `experiments/` | Quy trình nhiều seed/ablation, bootstrap CI, hình và bảng cho bài báo, notebook Kaggle |
+| `results/` | Kết quả thật theo từng đợt chạy (`v6`…`v9`), CI, file chọn cấu hình trên val |
+| `webapp/`, `web_demo.py` | Web demo (FastAPI + giao diện tĩnh) |
+| `deploy/` | Docker + Caddy |
+| `reports/` | Hình kiến trúc, lịch sử train, dashboard |

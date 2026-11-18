@@ -4,6 +4,7 @@ torchvision>=0.17
 transformers>=4.40,<5
 pyyaml
 einops                # mfgf backbone (models/frozen_vit.py), used by the default web-demo checkpoint
+timm                  # mfgf backbone training: ImageNet-21k ViT init (without it the ViT silently starts random)
 numpy
 pandas
 opencv-python

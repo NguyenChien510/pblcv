@@ -1,0 +1,223 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SpaceTime-DSCA Framework</title>
+<style>
+html,body{margin:0;padding:0;background:#fff}
+svg{display:block}
+text{font-family:"Liberation Serif","Times New Roman",serif;fill:#111}
+.t{font-size:26px}.s{font-size:21px}.xs{font-size:18px}.b{font-weight:bold}.i{font-style:italic}
+.h{font-size:36px;font-weight:bold}
+.box{stroke:#222;stroke-width:2.2}
+.ar{stroke:#111;stroke-width:3;fill:none;marker-end:url(#a)}
+.ln{stroke:#111;stroke-width:3;fill:none}
+</style></head><body>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="2120" height="1200" viewBox="0 0 2120 1200">
+<defs>
+  <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#111"/></marker>
+  <marker id="ap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#6a2c91"/></marker>
+  <g id="chips">
+    <rect x="0" y="-15" width="58" height="30" rx="6" fill="#f2a7c3" class="box"/><text x="29" y="6" text-anchor="middle" class="xs">[CLS]</text>
+    <rect x="68" y="-15" width="30" height="30" rx="6" fill="#f2a7c3" class="box"/>
+    <rect x="108" y="-15" width="30" height="30" rx="6" fill="#f2a7c3" class="box"/>
+    <text x="160" y="6" text-anchor="middle" class="t">···</text>
+    <rect x="184" y="-15" width="30" height="30" rx="6" fill="#f2a7c3" class="box"/>
+  </g>
+  <clipPath id="fc"><rect width="100" height="100"/></clipPath>
+</defs>
+
+<text x="1060" y="58" text-anchor="middle" style="font-size:42px">SpaceTime-DSCA: Disentangled Semantic Concept Alignment for Text-to-Video Person Retrieval</text>
+
+<!-- ================= TEXT PANEL ================= -->
+<rect x="20" y="95" width="1395" height="470" rx="40" fill="#fbe0d3"/>
+<text x="700" y="140" text-anchor="middle" class="h">Disentangled Concept Learning of Text</text>
+
+<rect x="45" y="170" width="345" height="370" rx="22" fill="#fff" stroke="#ccc" stroke-width="2"/>
+<text x="65" y="215" class="t"><tspan class="b">Text:</tspan> The woman is</text>
+<text x="65" y="253" class="t">wearing a <tspan fill="#2e7d32" style="fill:#2e7d32">green coat</tspan>,</text>
+<text x="65" y="291" class="t"><tspan style="fill:#2e7d32">black pants</tspan> and</text>
+<text x="65" y="329" class="t"><tspan style="fill:#2e7d32">brown shoes</tspan>. She is</text>
+<text x="65" y="367" class="t"><tspan style="fill:#1f5fa8">walking to the left</tspan></text>
+<text x="65" y="405" class="t"><tspan style="fill:#1f5fa8">carrying</tspan> a <tspan style="fill:#2e7d32">backpack</tspan>.</text>
+<text x="65" y="455" class="xs" style="fill:#2e7d32">■ appearance words</text>
+<text x="65" y="482" class="xs" style="fill:#1f5fa8">■ motion words</text>
+<text x="65" y="515" class="xs i" style="fill:#555">(one caption = one query)</text>
+
+<!-- full caption bypass -->
+<path d="M390,200 H1078" class="ar"/>
+<text x="700" y="190" text-anchor="middle" class="s">Full caption (Q<tspan dy="6" class="xs">full</tspan><tspan dy="-6">)</tspan></text>
+
+<!-- decomposer -->
+<path d="M390,385 H428" class="ar"/>
+<rect x="432" y="250" width="220" height="270" rx="26" fill="#f7b267" class="box"/>
+<text x="542" y="295" text-anchor="middle" class="t b">DSCA</text>
+<text x="542" y="327" text-anchor="middle" class="t b">Decomposer</text>
+<text x="542" y="370" text-anchor="middle" class="s">clause routing by</text>
+<text x="542" y="398" text-anchor="middle" class="s">appearance / motion</text>
+<text x="542" y="426" text-anchor="middle" class="s">lexicon</text>
+<text x="542" y="470" text-anchor="middle" class="xs i">rule-based,</text>
+<text x="542" y="494" text-anchor="middle" class="xs i">no learned params</text>
+
+<!-- Q_app -->
+<text x="705" y="296" class="s">Appearance Prompt (Q<tspan dy="6" class="xs">app</tspan><tspan dy="-6">)</tspan></text>
+<use href="#chips" x="700" y="330"/>
+<path d="M914,330 H1078" class="ar"/>
+<text x="705" y="373" class="xs i" style="fill:#2e7d32">“A woman: … green coat; black pants and brown</text>
+<text x="705" y="396" class="xs i" style="fill:#2e7d32">shoes; … carrying a backpack”</text>
+<path d="M652,330 H698" class="ln"/>
+
+<!-- Q_mot -->
+<text x="705" y="438" class="s">Motion Prompt (Q<tspan dy="6" class="xs">mot</tspan><tspan dy="-6">)</tspan></text>
+<path d="M652,470 H698" class="ln"/>
+<use href="#chips" x="700" y="470"/>
+<path d="M914,470 H1078" class="ar"/>
+<text x="705" y="513" class="xs i" style="fill:#1f5fa8">“A video of a woman: She is walking to the</text>
+<text x="705" y="536" class="xs i" style="fill:#1f5fa8">left carrying a backpack”</text>
+
+<!-- shared BERT -->
+<rect x="1082" y="165" width="160" height="340" rx="16" fill="#f2a7c3" class="box"/>
+<text x="1162" y="305" text-anchor="middle" class="t b">BERT</text>
+<text x="1162" y="335" text-anchor="middle" class="s">base</text>
+<text x="1162" y="380" text-anchor="middle" class="xs">shared</text>
+<text x="1162" y="402" text-anchor="middle" class="xs">weights</text>
+<text x="1162" y="440" text-anchor="middle" class="xs">[CLS] → 768-D</text>
+<path d="M1242,200 H1290" class="ar"/><text x="1298" y="210" class="t i">T<tspan dy="7" class="s">full</tspan></text>
+<path d="M1242,330 H1290" class="ar"/><text x="1298" y="340" class="t i">T<tspan dy="7" class="s">app</tspan></text>
+<path d="M1242,470 H1290" class="ar"/><text x="1298" y="480" class="t i">T<tspan dy="7" class="s">mot</tspan></text>
+
+<!-- ================= VIDEO PANEL ================= -->
+<rect x="20" y="590" width="1395" height="590" rx="40" fill="#d5ebdf"/>
+<text x="700" y="638" text-anchor="middle" class="h">Divided Space-Time Learning of Video</text>
+
+<!-- tracklet stack -->
+<g>
+  <image href="framework_frame.png" x="45"  y="680" width="150" height="150" preserveAspectRatio="xMidYMid slice"/><rect x="45" y="680" width="150" height="150" fill="none" stroke="#111" stroke-width="2.5"/>
+  <image href="framework_frame.png" x="70"  y="720" width="150" height="150" preserveAspectRatio="xMidYMid slice"/><rect x="70" y="720" width="150" height="150" fill="none" stroke="#111" stroke-width="2.5"/>
+  <image href="framework_frame.png" x="95"  y="760" width="150" height="150" preserveAspectRatio="xMidYMid slice"/><rect x="95" y="760" width="150" height="150" fill="none" stroke="#111" stroke-width="2.5"/>
+  <image href="framework_frame.png" x="120" y="800" width="150" height="150" preserveAspectRatio="xMidYMid slice"/><rect x="120" y="800" width="150" height="150" fill="none" stroke="#111" stroke-width="2.5"/>
+  <path d="M50,860 L120,1060" class="ar"/>
+  <text x="62" y="1010" class="t" transform="rotate(70 62 1010)">time</text>
+  <text x="195" y="990" text-anchor="middle" class="s">person tracklet</text>
+</g>
+
+<!-- sampler -->
+<path d="M272,875 H300" class="ln"/>
+<path d="M300,760 V1035" class="ln"/>
+<path d="M300,760 H330" class="ar"/>
+<path d="M300,1035 H330" class="ar"/>
+
+<!-- 4 discrete frames -->
+<text x="335" y="700" class="s b">4 discrete frames</text>
+<text x="335" y="722" class="xs i">(spread over the tracklet)</text>
+<g>
+  <image href="framework_frame.png" x="335" y="735" width="50" height="50"/><rect x="335" y="735" width="50" height="50" fill="none" stroke="#111" stroke-width="1.5"/>
+  <image href="framework_frame.png" x="390" y="735" width="50" height="50"/><rect x="390" y="735" width="50" height="50" fill="none" stroke="#111" stroke-width="1.5"/>
+  <image href="framework_frame.png" x="445" y="735" width="50" height="50"/><rect x="445" y="735" width="50" height="50" fill="none" stroke="#111" stroke-width="1.5"/>
+  <image href="framework_frame.png" x="500" y="735" width="50" height="50"/><rect x="500" y="735" width="50" height="50" fill="none" stroke="#111" stroke-width="1.5"/>
+</g>
+<text x="442" y="815" text-anchor="middle" class="xs">16×16 patch tokens</text>
+<path d="M555,760 H588" class="ar"/>
+
+<!-- 16 consecutive frames -->
+<text x="335" y="985" class="s b">16 consecutive frames</text>
+<text x="335" y="1007" class="xs i">(≈15 fps clip)</text>
+<g>
+  <image href="framework_frame.png" x="335" y="1015" width="40" height="40"/><rect x="335" y="1015" width="40" height="40" fill="none" stroke="#111" stroke-width="1.5"/>
+  <image href="framework_frame.png" x="345" y="1022" width="40" height="40"/><rect x="345" y="1022" width="40" height="40" fill="none" stroke="#111" stroke-width="1.5"/>
+  <image href="framework_frame.png" x="355" y="1029" width="40" height="40"/><rect x="355" y="1029" width="40" height="40" fill="none" stroke="#111" stroke-width="1.5"/>
+  <image href="framework_frame.png" x="365" y="1036" width="40" height="40"/><rect x="365" y="1036" width="40" height="40" fill="none" stroke="#111" stroke-width="1.5"/>
+  <text x="440" y="1062" class="t">···</text>
+  <image href="framework_frame.png" x="490" y="1036" width="40" height="40"/><rect x="490" y="1036" width="40" height="40" fill="none" stroke="#111" stroke-width="1.5"/>
+</g>
+<path d="M535,1035 H588" class="ar"/>
+
+<!-- Space-Time ViT -->
+<rect x="592" y="660" width="290" height="230" rx="26" fill="#fde68a" class="box"/>
+<text x="737" y="695" text-anchor="middle" class="t b">Space-Time ViT-B/16</text>
+<rect x="612" y="710" width="250" height="62" rx="14" fill="#f9b98a" class="box"/>
+<text x="737" y="737" text-anchor="middle" class="s">Temporal Multi-Head Attn</text>
+<text x="737" y="762" text-anchor="middle" class="xs i">(zero-init, across 4 frames)</text>
+<rect x="612" y="782" width="250" height="62" rx="14" fill="#fff3b0" class="box"/>
+<text x="737" y="809" text-anchor="middle" class="s">Spatial Multi-Head Attn</text>
+<text x="737" y="834" text-anchor="middle" class="xs i">(ImageNet-21k init)</text>
+<text x="737" y="875" text-anchor="middle" class="s">× 12 divided blocks</text>
+
+<!-- S3D -->
+<rect x="592" y="975" width="290" height="120" rx="26" fill="#bcd7f0" class="box"/>
+<text x="737" y="1015" text-anchor="middle" class="t b">S3D</text>
+<text x="737" y="1045" text-anchor="middle" class="s">3D-CNN, Kinetics-400 init</text>
+<text x="737" y="1074" text-anchor="middle" class="xs i">pooled 1024-D clip feature</text>
+
+<!-- heads -->
+<path d="M882,775 H935" class="ar"/><text x="908" y="765" text-anchor="middle" class="xs">[CLS]</text>
+<rect x="939" y="740" width="165" height="70" rx="14" fill="#d9d9d9" class="box"/>
+<text x="1021" y="771" text-anchor="middle" class="s">Appearance</text>
+<text x="1021" y="796" text-anchor="middle" class="s">head (FC+LN)</text>
+<path d="M882,1035 H935" class="ar"/>
+<rect x="939" y="1000" width="165" height="70" rx="14" fill="#d9d9d9" class="box"/>
+<text x="1021" y="1031" text-anchor="middle" class="s">Motion</text>
+<text x="1021" y="1056" text-anchor="middle" class="s">head (FC+LN)</text>
+<text x="1021" y="728" text-anchor="middle" class="s b">Appearance Stream</text>
+<text x="1021" y="1095" text-anchor="middle" class="s b">Motion Stream</text>
+
+<path d="M1104,775 H1135" class="ar"/><text x="1140" y="785" class="t i">V<tspan dy="7" class="s">app</tspan></text>
+<path d="M1104,1035 H1135" class="ar"/><text x="1140" y="1045" class="t i">V<tspan dy="7" class="s">mot</tspan></text>
+
+<!-- fusion -->
+<path d="M1205,775 H1232 V858" class="ar"/>
+<path d="M1205,1035 H1232 V952" class="ar"/>
+<rect x="1162" y="862" width="140" height="86" rx="14" fill="#d9d9d9" class="box"/>
+<text x="1232" y="895" text-anchor="middle" class="s">MLP Fusion</text>
+<text x="1232" y="925" text-anchor="middle" class="xs">[V<tspan dy="5" style="font-size:14px">app</tspan><tspan dy="-5">; V</tspan><tspan dy="5" style="font-size:14px">mot</tspan><tspan dy="-5">]</tspan></text>
+<path d="M1302,905 H1322" class="ar"/>
+<text x="1326" y="914" class="t i">V<tspan dy="7" class="s">video</tspan></text>
+<!-- ================= ALIGNMENT PANEL ================= -->
+<rect x="1440" y="95" width="660" height="1085" rx="40" fill="#d9d6f2"/>
+<text x="1770" y="145" text-anchor="middle" class="h">Hierarchical Multimodal</text>
+<text x="1770" y="187" text-anchor="middle" class="h">Alignment Space</text>
+
+<text x="1530" y="240" text-anchor="middle" class="s b">Text</text>
+<text x="2010" y="240" text-anchor="middle" class="s b">Video</text>
+
+<!-- nodes -->
+<g>
+  <rect x="1480" y="270" width="100" height="56" rx="12" fill="#f2a7c3" class="box"/><text x="1530" y="306" text-anchor="middle" class="t i">T<tspan dy="7" class="s">full</tspan></text>
+  <rect x="1480" y="420" width="100" height="56" rx="12" fill="#f2a7c3" class="box"/><text x="1530" y="456" text-anchor="middle" class="t i">T<tspan dy="7" class="s">app</tspan></text>
+  <rect x="1480" y="570" width="100" height="56" rx="12" fill="#f2a7c3" class="box"/><text x="1530" y="606" text-anchor="middle" class="t i">T<tspan dy="7" class="s">mot</tspan></text>
+  <rect x="1950" y="270" width="120" height="56" rx="12" fill="#a9c9ec" class="box"/><text x="2010" y="306" text-anchor="middle" class="t i">V<tspan dy="7" class="s">video</tspan></text>
+  <rect x="1950" y="420" width="120" height="56" rx="12" fill="#a9c9ec" class="box"/><text x="2010" y="456" text-anchor="middle" class="t i">V<tspan dy="7" class="s">app</tspan></text>
+  <rect x="1950" y="570" width="120" height="56" rx="12" fill="#a9c9ec" class="box"/><text x="2010" y="606" text-anchor="middle" class="t i">V<tspan dy="7" class="s">mot</tspan></text>
+</g>
+<path d="M1584,298 H1946" class="ar" style="marker-start:url(#a)"/>
+<text x="1765" y="285" text-anchor="middle" class="t i">L<tspan dy="7" class="s">joint</tspan></text>
+<text x="1765" y="328" text-anchor="middle" class="xs">symmetric InfoNCE (learnable τ)</text>
+<path d="M1584,448 H1946" class="ar" style="marker-start:url(#a)"/>
+<text x="1765" y="435" text-anchor="middle" class="t i">λ<tspan dy="7" class="s">app</tspan><tspan dy="-7">·L</tspan><tspan dy="7" class="s">app</tspan></text>
+<text x="1765" y="478" text-anchor="middle" class="xs">InfoNCE, same-Q<tspan dy="4" style="font-size:13px">app</tspan><tspan dy="-4"> pairs = positives</tspan></text>
+<path d="M1584,598 H1946" class="ar" style="marker-start:url(#a)"/>
+<text x="1765" y="585" text-anchor="middle" class="t i">λ<tspan dy="7" class="s">mot</tspan><tspan dy="-7">·L</tspan><tspan dy="7" class="s">mot</tspan></text>
+<text x="1765" y="628" text-anchor="middle" class="xs">InfoNCE, same-Q<tspan dy="4" style="font-size:13px">mot</tspan><tspan dy="-4"> pairs = positives</tspan></text>
+
+<!-- MIM -->
+<path d="M2080,480 Q2105,523 2080,566" stroke="#6a2c91" stroke-width="3" stroke-dasharray="8 6" fill="none" marker-end="url(#ap)" marker-start="url(#ap)"/>
+<text x="1770" y="672" text-anchor="middle" class="s b" style="fill:#6a2c91">λ<tspan dy="6" class="xs">mim</tspan><tspan dy="-6">·L</tspan><tspan dy="6" class="xs">MIM</tspan><tspan dy="-6">: Orthogonal Mutual</tspan></text>
+<text x="1770" y="698" text-anchor="middle" class="s" style="fill:#6a2c91">Information Minimisation, V<tspan dy="6" class="xs">app</tspan><tspan dy="-6"> ⊥ V</tspan><tspan dy="6" class="xs">mot</tspan></text>
+<text x="1770" y="724" text-anchor="middle" class="xs i" style="fill:#6a2c91">|cos| of batch-centred embeddings, video side only</text>
+
+<!-- total loss + inference -->
+<line x1="1480" y1="760" x2="2070" y2="760" stroke="#7a72b8" stroke-width="2"/>
+<text x="1490" y="800" class="s b">Training objective</text>
+<text x="1490" y="838" class="s i">L = L<tspan dy="6" class="xs">joint</tspan><tspan dy="-6"> + λ</tspan><tspan dy="6" class="xs">app</tspan><tspan dy="-6">L</tspan><tspan dy="6" class="xs">app</tspan><tspan dy="-6"> + λ</tspan><tspan dy="6" class="xs">mot</tspan><tspan dy="-6">L</tspan><tspan dy="6" class="xs">mot</tspan><tspan dy="-6"> + λ</tspan><tspan dy="6" class="xs">mim</tspan><tspan dy="-6">L</tspan><tspan dy="6" class="xs">MIM</tspan></text>
+<text x="1490" y="890" class="s b">Retrieval score</text>
+<text x="1490" y="928" class="s i">s = w<tspan dy="6" class="xs">1</tspan><tspan dy="-6">·cos(T</tspan><tspan dy="6" class="xs">full</tspan><tspan dy="-6">,V</tspan><tspan dy="6" class="xs">video</tspan><tspan dy="-6">) + w</tspan><tspan dy="6" class="xs">2</tspan><tspan dy="-6">·cos(T</tspan><tspan dy="6" class="xs">app</tspan><tspan dy="-6">,V</tspan><tspan dy="6" class="xs">app</tspan><tspan dy="-6">)</tspan></text>
+<text x="1520" y="962" class="s i">+ w<tspan dy="6" class="xs">3</tspan><tspan dy="-6">·cos(T</tspan><tspan dy="6" class="xs">mot</tspan><tspan dy="-6">,V</tspan><tspan dy="6" class="xs">mot</tspan><tspan dy="-6">)</tspan><tspan class="xs" font-style="normal">   (w chosen on val)</tspan></text>
+
+<!-- legend -->
+<rect x="1480" y="995" width="590" height="160" rx="16" fill="#fff" fill-opacity="0.55" stroke="#333" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="1775" y="1028" text-anchor="middle" class="s b">Legend</text>
+<rect x="1500" y="1048" width="34" height="26" rx="6" fill="#f2a7c3" class="box"/><text x="1544" y="1069" class="xs">text tokens / embeddings</text>
+<rect x="1790" y="1048" width="34" height="26" rx="6" fill="#a9c9ec" class="box"/><text x="1834" y="1069" class="xs">video embeddings</text>
+<rect x="1500" y="1090" width="34" height="26" rx="6" fill="#d9d9d9" class="box"/><text x="1544" y="1111" class="xs">trainable head</text>
+<path d="M1790,1103 H1826" class="ar"/><text x="1834" y="1111" class="xs">feature flow</text>
+<path d="M1500,1140 H1536" stroke="#6a2c91" stroke-width="3" stroke-dasharray="8 6"/><text x="1544" y="1146" class="xs">orthogonality constraint</text>
+<text x="1790" y="1146" class="xs">all embeddings: 768-D, L2-norm</text>
+</svg>
+</body></html>

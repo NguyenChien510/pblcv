@@ -408,13 +408,15 @@ class SearchEngine:
             name = Path(c["name"]).name.lower()
             if c["name"] == PREFERRED_CHECKPOINT:
                 return -1
-            if name == "best_weights.pth":
+            if c["name"] == "best.pth":       # GitHub release v2.0 asset (= m3c_joint_seed42.pth)
                 return 0
-            if "best" in name:
+            if name == "best_weights.pth":    # release v1.0 (older, Duke-trained)
                 return 1
-            if "latest" in name:
+            if "best" in name:
                 return 2
-            return 3
+            if "latest" in name:
+                return 3
+            return 4
 
         for c in sorted(self.scan_checkpoints(), key=priority):
             try:
