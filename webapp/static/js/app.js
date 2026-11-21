@@ -9,7 +9,7 @@ const NEUTRAL = "#94a3b8";
 const DARK_TEXT_RANKS = new Set([1, 2, 3, 7, 8, 9]);
 // Fixed analysis settings (no UI): whole video, Accurate mode (every frame, imgsz 960), detection threshold 0.35
 const ANALYZE_FIXED = { max_frames: 0, stride: 1, conf: 0.35 };
-const STAGE_ORDER = ["prepare", "detect", "crops", "encode", "stitch"];
+const STAGE_ORDER = ["prepare", "detect", "crops", "stitch", "encode"];   // stitching runs before encoding
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("ps." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -309,7 +309,7 @@ async function analyze() {
 }
 
 function setStage(stage, p) {
-  const idx = STAGE_ORDER.indexOf(stage === "clip" ? "crops" : stage);   // CLIP encoding runs silently inside "crops"
+  const idx = STAGE_ORDER.indexOf(stage === "clip" ? "encode" : stage);   // CLIP runs silently inside "encode"
   $("stages").querySelectorAll("li").forEach((li, i) => {
     li.classList.toggle("done", idx > i);
     li.classList.toggle("active", idx === i);
@@ -411,6 +411,12 @@ function attrBadges(tr, s) {
   if (top || bottom) {
     const name = (c) => (c ? t(`color_${c}`) : t("attr_unknown"));
     html += `<span class="swatches" title="${esc(t("attr_colors", { top: name(top), bottom: name(bottom) }))}">${top ? swatch(top) : ""}${bottom ? swatch(bottom) : ""}</span>`;
+  }
+  // Dominant measured action, unless the query already asks about an action (its chip shows the match below)
+  const acts = ["act_stand", "act_walk", "act_run", "act_sit"].filter((k) => a[k] != null);
+  if (acts.length && !cs.some((c) => c.key.startsWith("act_"))) {
+    const best = acts.reduce((x, y) => (a[y] > a[x] ? y : x));
+    html += `<span class="achip" title="${esc(t("act_info", { speed: (a.speed ?? 0).toFixed(2) }))}">${esc(t(`attr_${best}`))}</span>`;
   }
   for (const c of cs) {
     if (c.key === "gender") continue;

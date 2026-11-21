@@ -1,10 +1,12 @@
 # Cài đặt
 
-Tài liệu gồm 4 phần:
+Tài liệu gồm 6 phần:
 1. Cài môi trường (Linux hoặc Windows).
 2. Tải checkpoint.
 3. Chạy web demo, huấn luyện hoặc đánh giá.
 4. Deploy lên VPS bằng Docker.
+5. Deploy lên Google Cloud có GPU.
+6. Deploy lên AWS EC2 với tên miền DuckDNS, tự cập nhật mỗi lần push lên GitHub.
 
 Kiến trúc mô hình và kết quả xem [README.md](README.md).
 
@@ -137,9 +139,13 @@ Image chứa code, thư viện, BERT và CLIP. Image **không** chứa trọng s
 curl -fsSL https://get.docker.com | sh
 git clone https://github.com/NguyenChien510/pblcv.git && cd pblcv
 
-# 2. Từ máy local: chép model sang VPS (~915 MB)
-rsync -avP checkpoints/best.pth checkpoints/yolov8n-pose.pt checkpoints/reid checkpoints/attributes \
-      user@VPS:~/pblcv/checkpoints/
+# 2. Model: checkpoint tải thẳng từ release v2.0 trên VPS; các model phụ (~25 MB) chép từ máy local.
+#    Phải có đủ file TRƯỚC khi chạy: checkpoints/ được mount read-only, và nếu thiếu yolov8n.pt
+#    thì Docker tạo một THƯ MỤC trùng tên làm app lỗi.
+mkdir -p checkpoints
+curl -L -o checkpoints/best.pth https://github.com/NguyenChien510/pblcv/releases/download/v2.0/best.pth
+#    (chạy trên máy local, trong thư mục repo)
+rsync -avP checkpoints/yolov8n-pose.pt checkpoints/reid checkpoints/attributes user@VPS:~/pblcv/checkpoints/
 rsync -avP yolov8n.pt user@VPS:~/pblcv/
 
 # 3. Trên VPS: tạo mật khẩu và cấu hình
@@ -160,3 +166,290 @@ Mở `https://<DOMAIN>`; trình duyệt sẽ hỏi tài khoản `AUTH_USER` và 
 - Mỗi lần container khởi động lại, video đã upload và kết quả phân tích bị xóa.
 - Phân tích chạy tuần tự trên một worker: nếu hai người phân tích cùng lúc, người sau phải chờ.
 - **Thử trên máy local không cần HTTPS:** trong `.env` đặt `DOMAIN=:80` và `HTTP_PORT=8080`, rồi mở `http://localhost:8080`.
+
+---
+
+## 5. Deploy lên Google Cloud có GPU (Compute Engine, NVIDIA L4)
+
+Dùng credit $300 của Google Cloud. Máy: `g2-standard-4` (1× L4 24 GB, 4 vCPU, 16 GB RAM), giá khoảng **$0.71/giờ khi bật**, trừ vào credit. Cách dùng: bật trước buổi demo, tắt khi xong.
+
+Các lệnh `gcloud` chạy trên **máy local** (đã cài Google Cloud SDK); các lệnh còn lại chạy **trên VM** sau khi `gcloud compute ssh`.
+
+### A. Chuẩn bị tài khoản (một lần, trên console.cloud.google.com)
+
+1. **Nâng cấp billing:** Billing → Account overview → **Upgrade**. Không mất phí; credit còn lại vẫn được trừ trước. Tài khoản trial không dùng được GPU.
+2. **Cảnh báo chi tiêu:** Billing → Budgets & alerts → tạo budget $300, ngưỡng 25/50/75/90%. Budget chỉ gửi email, **không** tự dừng máy.
+3. **Bật API:** APIs & Services → bật **Compute Engine API**.
+4. **Xin hạn mức GPU:** IAM & Admin → Quotas & system limits, xin tăng lên **1** cho:
+   - `GPUs (all regions)`;
+   - `NVIDIA L4 GPUs`, region `asia-southeast1` (Singapore).
+
+   Chờ email duyệt (vài giờ đến vài ngày) rồi mới làm phần B.
+
+### B. Tạo VM (máy local)
+
+```bash
+gcloud auth login
+gcloud config set project <PROJECT_ID>
+gcloud config set compute/zone asia-southeast1-b      # L4 có ở asia-southeast1-a và -b
+
+# IP tĩnh: tên miền <ip>.sslip.io không đổi sau mỗi lần tắt/bật VM
+gcloud compute addresses create pblcv-ip --region=asia-southeast1
+gcloud compute addresses describe pblcv-ip --region=asia-southeast1 --format='value(address)'   # ghi lại IP
+
+# Mở cổng web 80/443
+gcloud compute firewall-rules create pblcv-web --allow=tcp:80,tcp:443 --target-tags=pblcv-web
+
+# VM: L4 đi kèm machine type g2-standard-4
+gcloud compute instances create pblcv-gpu \
+  --machine-type=g2-standard-4 \
+  --maintenance-policy=TERMINATE \
+  --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud \
+  --boot-disk-size=60GB --boot-disk-type=pd-balanced \
+  --address=pblcv-ip --tags=pblcv-web
+```
+
+Báo `ZONE_RESOURCE_POOL_EXHAUSTED` nghĩa là zone đang hết L4: thử `--zone=asia-southeast1-a`, hoặc một region khác có L4 (xem bảng *GPU regions and zones* của Google). Báo lỗi quota thì bước A4 chưa được duyệt.
+
+### C. Cài driver NVIDIA, Docker và NVIDIA Container Toolkit (trên VM)
+
+```bash
+gcloud compute ssh pblcv-gpu        # từ máy local
+
+# Driver (script chính thức của Google). VM sẽ tự khởi động lại: SSH lại và chạy lại đúng lệnh này đến khi báo đã cài xong.
+sudo apt-get update && sudo apt-get install -y build-essential libvulkan1
+curl -L https://storage.googleapis.com/compute-gpu-installation-us/installer/latest/cuda_installer.pyz -o cuda_installer.pyz
+sudo python3 cuda_installer.pyz install_driver
+nvidia-smi                          # phải thấy "NVIDIA L4"
+
+# Docker
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER       # thoát SSH rồi vào lại để có quyền docker
+
+# NVIDIA Container Toolkit: cho container dùng GPU
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+docker run --rm --gpus all ubuntu nvidia-smi    # container cũng phải thấy "NVIDIA L4"
+```
+
+### D. Code và model
+
+Trên VM:
+
+```bash
+git clone https://github.com/NguyenChien510/pblcv.git && cd pblcv
+mkdir -p checkpoints
+curl -L -o checkpoints/best.pth https://github.com/NguyenChien510/pblcv/releases/download/v2.0/best.pth   # 941 MB
+```
+
+Trên máy local, trong thư mục repo (các model phụ, khoảng 25 MB):
+
+```bash
+gcloud compute scp --recurse checkpoints/yolov8n-pose.pt checkpoints/reid checkpoints/attributes pblcv-gpu:~/pblcv/checkpoints/
+gcloud compute scp yolov8n.pt pblcv-gpu:~/pblcv/
+```
+
+Phải có đủ các file này **trước** bước E: `checkpoints/` được mount read-only, và nếu thiếu `yolov8n.pt` thì Docker tạo một thư mục trùng tên làm app lỗi.
+
+### E. Mật khẩu và chạy (trên VM)
+
+```bash
+cd ~/pblcv/deploy
+cp .env.example .env
+docker run --rm caddy:2 caddy hash-password --plaintext 'mat-khau-moi'
+nano .env      # DOMAIN=<IP-tĩnh>.sslip.io   AUTH_USER=...   AUTH_HASH='<kết quả lệnh trên>' (giữ dấu nháy đơn)
+
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build   # lần đầu build khoảng 10-15 phút
+docker compose logs -f app     # chờ "Device : CUDA" và "Checkpoint : best.pth"
+```
+
+Mở `https://<IP-tĩnh>.sslip.io` và đăng nhập. Góc trên giao diện phải hiện **CUDA · YOLOv8n**. Nếu hiện CPU: thiếu `-f docker-compose.gpu.yml`, hoặc phần C chưa xong.
+
+**Kiểm tra:** upload `TESTVIDEO.mp4`, phân tích rồi tìm vài câu mô tả. Trên CPU, video này cho 18 người và mất khoảng 3 phút; trên L4 sẽ nhanh hơn nhiều. Thứ hạng có thể lệch nhẹ so với CPU do khác phần cứng.
+
+### F. Bật/tắt hằng ngày (máy local)
+
+```bash
+gcloud compute instances stop pblcv-gpu     # sau demo: hết tính tiền GPU/CPU
+gcloud compute instances start pblcv-gpu    # trước demo: container tự chạy lại, chờ khoảng 1-2 phút
+```
+
+- Khi VM tắt vẫn tốn một khoản nhỏ cho ổ đĩa 60 GB và IP tĩnh (vài đô mỗi tháng, trừ vào credit).
+- Mỗi lần VM hoặc container khởi động lại, video đã upload và kết quả phân tích bị xóa.
+- **Cập nhật code:** trên VM chạy `cd ~/pblcv && git pull`, rồi lặp lại lệnh `docker compose ... up -d --build` ở bước E.
+- **Tiết kiệm hơn:** máy Spot (thêm `--provisioning-model=SPOT --instance-termination-action=STOP` khi tạo VM; cần quota `Preemptible NVIDIA L4 GPUs`) rẻ hơn nhiều, nhưng Google có thể thu hồi bất cứ lúc nào, nên không dùng cho buổi demo chính.
+
+### G. Dọn dẹp trước khi hết credit hoặc hết hạn 90 ngày (máy local)
+
+Tài khoản đã nâng cấp sẽ trừ thẳng vào thẻ khi credit hết. Xóa hết tài nguyên:
+
+```bash
+gcloud compute instances delete pblcv-gpu
+gcloud compute addresses delete pblcv-ip --region=asia-southeast1
+gcloud compute firewall-rules delete pblcv-web
+```
+
+Kiểm tra lại trong Billing → Reports rằng chi phí đã về 0.
+
+---
+
+## 6. Deploy lên AWS EC2 (c7i.4xlarge) + tên miền DuckDNS + CI/CD từ GitHub
+
+Mỗi lần push lên `main` có sửa code app, GitHub tự build image và cập nhật server:
+
+```
+git push ─► GitHub Actions: build Docker image ─► ghcr.io/nguyenchien510/pblcv-webdemo:<commit>
+                         └─► SSH vào EC2 ─► deploy/remote-deploy.sh: pull image, chạy lại,
+                                            chờ app trả lời; lỗi thì tự quay về image trước
+```
+
+| File | Vai trò |
+| :--- | :--- |
+| [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) | Workflow build và deploy |
+| [`deploy/ec2-setup.sh`](deploy/ec2-setup.sh) | Cài máy EC2, chạy một lần |
+| [`deploy/remote-deploy.sh`](deploy/remote-deploy.sh) | GitHub chạy script này trên server mỗi lần deploy |
+
+Repo public nên GitHub Actions và GitHub Container Registry (GHCR) miễn phí. Image không chứa checkpoint; model nằm trên ổ đĩa EC2, `ec2-setup.sh` tải về.
+
+### Máy và chi phí
+
+**`c7i.4xlarge`** có 16 vCPU (8 nhân thật Intel Sapphire Rapids, có AVX-512/VNNI/AMX) và 32 GB RAM. Ba điểm cần biết trước:
+
+- **Đắt.** Ở Singapore khoảng **$0.82/giờ khi bật**, theo các trang tổng hợp giá; số chính xác xem ở trang giá EC2 của AWS. Bật 24/7 thì khoảng $600/tháng, nên **chỉ bật khi demo**. Mục C có hướng dẫn cài tự tắt khi máy rảnh.
+- **Phải nâng cấp lên Paid plan.** Máy này không nằm trong danh sách của Free plan. Nâng cấp thì credit vẫn còn và được trừ trước; khi hết credit mới trừ vào thẻ. $100 credit dùng được khoảng 115 giờ chạy máy.
+- **Phải xin tăng hạn mức vCPU.** Tài khoản mới thường chỉ được chạy 5 vCPU, trong khi máy này cần 16.
+
+| Khoản | Giá ước tính (Singapore) |
+| :--- | :--- |
+| `c7i.4xlarge` | ~$0.82/giờ khi bật |
+| IPv4 công khai | ~$0.005/giờ khi bật |
+| Ổ đĩa 30 GB gp3 | ~$3/tháng, tính cả khi máy tắt |
+| Tên miền DuckDNS, GitHub Actions, GHCR | miễn phí |
+
+Muốn thử miễn phí trước thì làm y hệt các bước dưới với `m7i-flex.large` (2 vCPU, 8 GB, nằm trong Free plan). Máy này không cần bước A2 và A4, nhưng phân tích sẽ chậm hơn nhiều.
+
+### 0. Code phải có trên GitHub
+
+Workflow và hai script phải nằm trên nhánh `main` (đã push). Lần push đầu chưa có cấu hình EC2 nên workflow chỉ build image; deploy sẽ chạy ở mục E.
+
+### A. Tài khoản AWS (một lần)
+
+1. **Đăng ký và chọn region.** Đăng ký tại aws.amazon.com (cần thẻ Visa/Mastercard). Góc phải trên console, chọn region **Asia Pacific (Singapore) `ap-southeast-1`**; mọi bước sau làm trong region này.
+2. **Nâng cấp Paid plan:** bấm *Upgrade plan* trên banner Free plan, hoặc vào *Billing and Cost Management*.
+   - Nâng cấp bình thường thì giữ nguyên credit.
+   - Credit chỉ mất ngay nếu nâng cấp bằng cách tham gia AWS Organizations hoặc Control Tower.
+3. **Cảnh báo chi tiêu:** *Billing and Cost Management → Budgets → Create budget* → mẫu *Monthly cost budget*, ví dụ $50, nhập email.
+   - AWS gửi email khi chi tiêu tới 85% và 100%, và khi dự báo vượt ngân sách.
+   - Budget **chỉ gửi email, không tự tắt máy**.
+4. **Xin hạn mức vCPU:** *Service Quotas → AWS services → Amazon Elastic Compute Cloud (Amazon EC2)* → tìm **Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances** (mã `L-1216C47A`).
+   - Nếu *Applied quota value* nhỏ hơn 16, bấm *Request increase at account level* và nhập **16**.
+   - Nếu AWS hỏi lý do, ghi: "1 c7i.4xlarge instance for a university web demo".
+   - Chờ duyệt, từ vài giờ đến vài ngày; có email báo. Máy đang tắt không bị tính vào hạn mức.
+
+### B. Tên miền miễn phí DuckDNS (một lần)
+
+1. Vào https://www.duckdns.org, đăng nhập bằng GitHub hoặc Google.
+2. Ô *sub domain* gõ một tên, ví dụ `pblcv-demo`, rồi bấm *add domain*. Bạn được `pblcv-demo.duckdns.org`. Cột IP để gì cũng được, script sẽ tự cập nhật.
+3. Chép **token** ở đầu trang. Giữ bí mật: ai có token đều đổi được IP của tên miền này.
+
+Ghi chú:
+- Tên miền miễn phí chỉ có dạng `<tên>.duckdns.org`.
+- `duckdns.org` nằm trong Public Suffix List, nên mỗi tên con có hạn mức chứng chỉ Let's Encrypt riêng; Caddy tự xin HTTPS bình thường.
+- Không cần Elastic IP: mỗi lần máy bật, script trên máy tự trỏ tên miền về IP mới, nên tránh được phí IP tĩnh trong lúc máy tắt.
+
+### C. Tạo máy EC2 (console)
+
+1. **Tạo máy:** EC2 → **Launch instance** (chỉ làm được khi hạn mức ở bước A4 đã ≥ 16):
+
+   | Mục | Chọn |
+   | :--- | :--- |
+   | Name | `pblcv-demo` |
+   | AMI | **Ubuntu Server 24.04 LTS**, 64-bit (x86) |
+   | Instance type | **`c7i.4xlarge`** |
+   | Key pair | **Create new key pair**: ED25519, `.pem`; trình duyệt tải về `pblcv-key.pem`, giữ kỹ |
+   | Network settings | Tạo security group mới: bật **Allow SSH**, **Allow HTTPS**, **Allow HTTP** từ *Anywhere* |
+   | Storage | **30 GiB gp3** |
+
+   SSH phải mở cho *Anywhere* vì máy chạy GitHub Actions không có IP cố định. Ubuntu trên EC2 chỉ cho đăng nhập bằng key, không dùng mật khẩu.
+
+   Nếu Singapore không có `c7i.4xlarge`, chọn region khác và làm lại bước A4 ở region đó, vì hạn mức tính theo từng region.
+2. **Tự tắt khi rảnh** (nên làm, tránh quên tắt máy): chọn máy → *Actions → Monitor and troubleshoot → Manage CloudWatch alarms* → *Create an alarm*:
+   - *Alarm action*: **Stop**;
+   - *Alarm thresholds*: **Average CPU utilization ≤ 2%**, **24 consecutive periods of 5 minutes**.
+
+   Máy sẽ tự tắt sau 2 giờ liên tục không phân tích video. Lúc chỉ xem kết quả, CPU gần như 0%, nên nếu buổi demo dài thì nới thời gian ra.
+
+### D. Cài máy (một lần)
+
+Trên máy local, lấy *Public IPv4 address* của máy ở trang Instances:
+
+```bash
+chmod 400 ~/Downloads/pblcv-key.pem
+ssh -i ~/Downloads/pblcv-key.pem ubuntu@<PUBLIC_IP>
+```
+
+Trên EC2:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NguyenChien510/pblcv/main/deploy/ec2-setup.sh -o ec2-setup.sh
+bash ec2-setup.sh pblcv-demo.duckdns.org
+```
+
+Script hỏi **mật khẩu demo** và **token DuckDNS**; cả hai không hiện lên màn hình. Mất khoảng 5 phút, và làm các việc sau:
+- cài Docker và thêm 4 GB swap;
+- clone repo vào `~/pblcv`;
+- tải model (~960 MB): checkpoint `best.pth` từ release v2.0, YOLO, pose, re-ID và thuộc tính;
+- cài dịch vụ cập nhật DuckDNS: chạy lúc khởi động và mỗi 5 phút;
+- ghi `deploy/.env` với tên miền và tài khoản `demo`;
+- tạo SSH key riêng cho GitHub Actions.
+
+Cuối cùng script in ra giá trị cần điền vào GitHub và **private key**, rồi xoá private key khỏi server. Lỡ mất key thì chạy lại script để tạo key mới.
+
+### E. Nối GitHub với EC2 và deploy lần đầu
+
+1. **Thêm cấu hình:** repo trên GitHub → **Settings → Secrets and variables → Actions**:
+
+   | Tab | Tên | Giá trị |
+   | :--- | :--- | :--- |
+   | Variables | `EC2_HOST` | `pblcv-demo.duckdns.org` |
+   | Variables | `EC2_USER` | chỉ cần nếu không phải `ubuntu` |
+   | Secrets | `EC2_SSH_KEY` | toàn bộ private key script in ra, gồm cả dòng `BEGIN`/`END` |
+
+2. **Chạy deploy:** tab **Actions** → *Build and deploy web demo* → **Run workflow**.
+   - Job `build` dùng lại cache, nên nhanh.
+   - Job `deploy` lần đầu phải kéo image vài GB về EC2, mất vài phút. Sau đó nó chờ app trả lời mới báo xanh.
+3. **Mở web:** vào `https://pblcv-demo.duckdns.org`, đăng nhập `demo` / mật khẩu đã đặt. Caddy tự xin chứng chỉ HTTPS ở lần truy cập đầu.
+
+Server đăng nhập GHCR bằng token tạm của chính job, nên image để private cũng kéo được, không cần làm gì thêm.
+
+### F. Dùng hằng ngày
+
+- **Trước demo:** EC2 → Instances → *Instance state → Start*.
+  - Khoảng 15 giây sau khi máy bật, DuckDNS trỏ tên miền về IP mới.
+  - Container tự chạy; chờ 1–2 phút để app nạp model.
+- **Sau demo:** *Instance state → Stop*, hoặc để alarm ở bước C2 tự tắt. Khi máy tắt, chỉ còn ổ đĩa tính tiền.
+- **Cập nhật code:** push lên `main` là xong, xem tiến trình ở tab Actions.
+  - Workflow chỉ chạy khi commit sửa `webapp/`, `models/`, `data/`, `utils/`, `configs/`, `web_demo.py`, `requirements.txt`, `Dockerfile`, `deploy/` hoặc chính workflow. Sửa README hay bài báo thì không deploy.
+  - App không trả lời trong 5 phút thì workflow báo lỗi kèm log, và server tự chạy lại image trước đó.
+  - Push lúc máy đang tắt thì job deploy báo lỗi; bật máy rồi bấm *Re-run failed jobs*.
+- **Mất dữ liệu khi khởi động lại:** video đã upload và kết quả phân tích bị xoá mỗi lần container khởi động lại. Đây là thiết kế hiện tại của app.
+- **Xem log:** `ssh -i pblcv-key.pem ubuntu@pblcv-demo.duckdns.org 'cd pblcv/deploy && docker compose logs -f app'`.
+- **Đổi mật khẩu:** trên EC2 chạy lại `bash ec2-setup.sh pblcv-demo.duckdns.org`, rồi `cd ~/pblcv/deploy && docker compose up -d`.
+  - Script chạy lại sẽ bỏ qua cài đặt và tải model đã có.
+  - Script cũng in ra một SSH key mới, nhưng key cũ trong GitHub vẫn dùng được, không cần đổi secret.
+
+### G. Theo dõi chi phí và dọn dẹp
+
+- **Xem chi phí:** *Billing and Cost Management → Free Tier* (credit còn lại) và *Bills* (chi phí theo ngày).
+- **Ví dụ:** 20 buổi demo, mỗi buổi 2 giờ, tức 40 giờ, tốn khoảng $33 + $3 ổ đĩa.
+
+Khi không dùng nữa:
+1. EC2 → *Terminate instance*, rồi kiểm tra *Volumes* không còn ổ đĩa nào.
+2. Xoá alarm trong CloudWatch.
+3. Xoá biến `EC2_HOST` trên GitHub để workflow chỉ build, không deploy nữa.
+4. Nếu muốn, xoá tên miền trên duckdns.org.

@@ -5,7 +5,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: pblcv-webdemo:latest
+    # Local: built from the Dockerfile. EC2 (CI/CD): APP_IMAGE in .env points at the ghcr.io image built by
+    # .github/workflows/deploy.yml, which deploy/remote-deploy.sh pulls and starts with --no-build.
+    image: ${APP_IMAGE:-pblcv-webdemo:latest}
     restart: unless-stopped
     volumes:
       - ../checkpoints:/app/checkpoints:ro

@@ -37,7 +37,8 @@ MOTION_VERBS_EN = {
     "move", "moving", "moves", "moved", "stop", "stopping", "stops",
     "stand", "standing", "stands", "stood", "go", "going", "goes", "went",
     "approach", "approaching", "approaches", "leave", "leaving", "leaves",
-    "pull", "pulling", "pulls", "push", "pushing", "ride", "riding"
+    "pull", "pulling", "pulls", "push", "pushing", "ride", "riding",
+    "sit", "sits", "sitting", "sat", "seated"
 }
 
 MOTION_DIRECTIONS_EN = {

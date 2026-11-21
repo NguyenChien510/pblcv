@@ -31,7 +31,13 @@ ProgressCb = Callable[[str, float, float], None]
 DEFAULT_WEIGHTS = {"joint": 0.45, "app": 0.45, "mot": 0.09}   # the three DSCA branches; the UI tunes only these
 CLIP_WEIGHT = 0.2           # hidden CLIP branch: fused = (DSCA + CLIP_WEIGHT * clip) / (1 + CLIP_WEIGHT), not user-tunable
 CLIP_MODEL = "openai/clip-vit-base-patch16"
-CLIP_CROPS = 3              # preview crops per track (thumb + first/last film crop); ~165 ms each on CPU
+# SPEED MODE (enabled 2026-11-21 on request). UNDO: CLIP_CROPS = 3 and ENCODER_INT8 = False.
+# Measured on the two hand-labelled videos (each change on its own): CLIP on the thumb only instead of thumb +
+# first/last film crop cut CLIP time on the station clip 105 s -> 36 s; dynamic int8 Linear layers in the video
+# encoder cut its encoding 266 s -> 195 s. Cost: top-1 8/9 -> 7/9 (TESTVIDEO, from the CLIP change) and 15/15 -> 14/15
+# (station clip, from either change).
+CLIP_CROPS = 1              # preview crops per track for CLIP (1 = thumb; 3 = thumb + first/last film crop); ~230 ms each on CPU
+ENCODER_INT8 = True         # CPU only: torch dynamic int8 quantisation of the video encoder's nn.Linear layers
 CLIP_BATCH = 16
 CLIP_PREFIX = "a photo of "
 # Loaded at startup when present: recipe m3c joint model (MFGF backbones, trained on the train splits of all three
@@ -48,7 +54,7 @@ ENCODE_BATCH = 4
 SOFTMAX_TAU = 0.07          # same temperature as the InfoNCE training loss
 
 # --- tracking (YOLO + BoT-SORT with native ReID) ---
-TRACKER_VERSION = "botsort-reid-v5-split-clip"   # part of the analysis cache key; bump when analysis output changes
+TRACKER_VERSION = "botsort-reid-v6-action"   # part of the analysis cache key; bump when analysis output changes
 DETECT_IMGSZ = 960          # upscaled inference finds small, distant people in crowds (Accurate mode)
 DETECT_IMGSZ_FAST = 640     # Balanced/Fast modes: skips tiny far-away people -> fewer tracks to encode
 DETECT_CONF_LOW = 0.1       # low-score boxes feed BoT-SORT's second association stage
@@ -94,6 +100,29 @@ ATTR_PATTERNS = {           # key -> (regex meaning "yes" or None, regex meaning
     "longpants": (None, r"\bshorts\b"),
     "longhair": (r"\b(long[- ]hair(ed)?|ponytail)\b", r"\b(short[- ]hair(ed)?|bald)\b"),
 }
+# Actions are measured from the track itself, not by the text model: TVPReid captions mention walking in 57% of
+# cases but running in 0.8%, standing in 0.3% and sitting in 0.02% (3 captions, all wheelchairs), so the DSCA
+# scores barely react to these words. Speed = displacement of the box centre over ACTION_WINDOW_S, in box heights
+# per second (plus the change of log box height, i.e. moving towards/away from the camera). Sitting comes from pose
+# keypoints: knees close to hip height relative to the torso.
+# Calibrated by eye on two real videos (2026-11-21): 34 people standing in a station crowd measured a median of
+# 0.06 (max 0.125); 18 people walking far from the camera, mostly along its axis, measured 0.13-0.9. A 1 s window
+# separated them best (2-3 s windows were worse). Running is set from physics only: no runner was available.
+ACTION_WINDOW_S = 1.0       # long enough to average out box jitter of a standing person
+ACTION_STEP_S = 0.25
+ACTION_MIN_TRACK_S = 1.0    # less observed time than this gives no action (short tracks at the frame edge looked fast)
+ACTION_EDGE_PX = 3          # windows whose box touches the frame border are skipped (a body entering the frame "grows")
+STAND_MAX_SPEED = 0.13      # body heights per second; below -> standing still
+RUN_MIN_SPEED = 1.5         # above -> running (walking across the image is about 0.7-0.9)
+ACTION_MIN_FRACTION = 0.7   # standing/running for this fraction of the track counts fully (p = 1)
+SIT_THIGH_RATIO = 0.45      # (knee_y - hip_y) / (hip_y - shoulder_y) below this -> sitting (standing ~0.7-1.0)
+ACTION_PATTERNS = {         # constraint key -> query regex
+    "act_run": r"\b(run|runs|running|ran|jog|jogs|jogging|sprint|sprints|sprinting|rushing|hurrying)\b",
+    "act_walk": r"\b(walk|walks|walking|walked|strolling|strolls)\b",
+    "act_stand": r"\b(stand|stands|standing|stood|waiting|waits)\b",
+    "act_sit": r"\b(sit|sits|sitting|sat|seated)\b",
+}
+ACTION_WEIGHTS = {"act_run": 0.10, "act_walk": 0.10, "act_stand": 0.10, "act_sit": 0.08}
 TOP_GARMENTS = {"shirt", "shirts", "t-shirt", "tshirt", "tee", "top", "jacket", "coat", "sweater", "hoodie", "blouse",
                 "vest", "dress", "suit", "cardigan", "blazer", "jumper", "sweatshirt", "polo", "parka", "overcoat"}
 BOTTOM_GARMENTS = {"pants", "trousers", "jeans", "shorts", "skirt", "leggings", "sweatpants"}
@@ -256,15 +285,19 @@ def _parse_colors(words: List[str], i: int) -> List[str]:
     return out
 
 
-def query_attributes(prompt: str) -> List[Dict[str, Any]]:
+def query_attributes(prompt: str, with_attrs: bool = True) -> List[Dict[str, Any]]:
     """
-    Structured constraints found in the prompt: gender, garment colours and attribute-model attributes.
+    Structured constraints found in the prompt: gender, garment colours, attribute-model attributes (only when
+    with_attrs, i.e. the attribute model is loaded) and actions measured from the tracks (always).
     Each is {"key", "value", "weight"}; value is "male"/"female", a list of colour names, or True/False.
     """
     text = prompt.lower()
+    out: List[Dict[str, Any]] = [{"key": key, "value": True, "weight": ACTION_WEIGHTS[key]}
+                                 for key, rx in ACTION_PATTERNS.items() if re.search(rx, text)]
+    if not with_attrs:
+        return out
     words = re.findall(r"[a-z]+(?:-[a-z]+)?|/", text)
     wset = set(words)
-    out: List[Dict[str, Any]] = []
 
     male, female = bool(wset & MALE_WORDS), bool(wset & FEMALE_WORDS)
     if male != female:
@@ -292,6 +325,83 @@ def query_attributes(prompt: str) -> List[Dict[str, Any]]:
             out.append({"key": key, "value": True, "weight": CONSTRAINT_WEIGHTS[key]})
         elif no and re.search(no, text):
             out.append({"key": key, "value": False, "weight": CONSTRAINT_WEIGHTS[key]})
+    return out
+
+
+def _sit_score(kp: Optional[np.ndarray]) -> Optional[float]:
+    """
+    P(sitting) from one crop's COCO keypoints [17, 3]. Seen from the side a sitting person's thighs are horizontal,
+    seen from the front they are foreshortened; either way the knees sit close to hip height relative to the torso
+    (standing or walking: about 0.7-1.0 torso lengths lower). None when shoulders, hips or knees are not visible.
+    """
+    if kp is None:
+        return None
+    groups = [[i for i in g if kp[i, 2] > 0.5] for g in ((5, 6), (11, 12), (13, 14))]
+    if not all(groups):
+        return None
+    sy, hy, ky = (float(np.mean([kp[i, 1] for i in g])) for g in groups)
+    torso = hy - sy
+    if torso < 4:
+        return None
+    r = (ky - hy) / torso
+    return 1.0 / (1.0 + math.exp((r - SIT_THIGH_RATIO) / 0.08))
+
+
+def track_speeds(boxes: Dict[int, List[int]], fps: float, width: int = 0, height: int = 0) -> np.ndarray:
+    """
+    Speed of a track in box heights per second, one value every ACTION_STEP_S over windows of ACTION_WINDOW_S.
+    Each contiguous run of frames is measured on its own (stitched tracks have gaps); windows whose box touches the
+    frame border (when width/height are given) are skipped. Empty when there is too little to measure.
+    """
+    frames = sorted(boxes)
+    if len(frames) < ACTION_MIN_TRACK_S * fps:
+        return np.zeros(0)
+    win = max(2, int(round(ACTION_WINDOW_S * fps)))
+    step = max(1, int(round(ACTION_STEP_S * fps)))
+    e = ACTION_EDGE_PX
+    inside = (lambda b: not width or (b[0] > e and b[1] > e and b[2] < width - e and b[3] < height - e))
+    runs, cur = [], [frames[0]]
+    for f in frames[1:]:
+        if f == cur[-1] + 1:
+            cur.append(f)
+        else:
+            runs.append(cur)
+            cur = [f]
+    runs.append(cur)
+    out = []
+    for run in runs:
+        w = min(win, len(run) - 1)
+        if w < max(2, win // 2):        # shorter than half a window: jitter would dominate
+            continue
+        for a in range(run[0], run[-1] - w + 1, step):
+            b0, b1 = boxes[a], boxes[a + w]
+            h0, h1 = b0[3] - b0[1], b1[3] - b1[1]
+            if min(h0, h1) <= 0 or not (inside(b0) and inside(b1)):
+                continue
+            dx = ((b1[0] + b1[2]) - (b0[0] + b0[2])) / 2.0
+            dy = ((b1[1] + b1[3]) - (b0[1] + b0[3])) / 2.0
+            lateral = math.hypot(dx, dy) / ((h0 + h1) / 2.0)
+            axial = abs(math.log(h1 / h0))
+            out.append(math.hypot(lateral, axial) * fps / w)
+    return np.array(out)
+
+
+def action_probs(speeds: np.ndarray, sit_pose: Optional[float]) -> Dict[str, float]:
+    """
+    act_* probabilities of a track from the soft fraction of its windows in each speed band. Standing and running
+    count fully once done for ACTION_MIN_FRACTION of the track; walking is the plain fraction, because scaling it up
+    gave standing people p(walk) of 0.3-0.4 on the calibration videos. Standing is still and not sitting.
+    """
+    if not len(speeds):
+        return {}
+    p_still = 1.0 / (1.0 + np.exp((speeds - STAND_MAX_SPEED) / 0.015))
+    p_run = 1.0 / (1.0 + np.exp((RUN_MIN_SPEED - speeds) / 0.2))
+    p_walk = np.clip(1.0 - p_still - p_run, 0.0, 1.0)
+    frac = lambda p: float(min(1.0, p.mean() / ACTION_MIN_FRACTION))
+    out = {"act_run": frac(p_run), "act_walk": float(p_walk.mean()), "act_stand": frac(p_still)}
+    if sit_pose is not None:
+        out["act_sit"] = float(sit_pose)
+        out["act_stand"] *= 1.0 - float(sit_pose)
     return out
 
 
@@ -379,6 +489,7 @@ class SearchEngine:
         # original SpaceTimeViT is built with ImageNet weights.
         self.model: Optional[DAMRModel] = None
         self.arch_key: Tuple = ()
+        self.encoder_int8 = False
         self.frame_layout = "uniform"
         self._load_default_checkpoint()
         if self.model is None:
@@ -466,7 +577,9 @@ class SearchEngine:
         if any(k.startswith("video_encoder.vit.") for k in state):   # weights-only files carry no config
             mcfg["backbone"] = "mfgf"
         arch = self._arch_key(mcfg)
-        model = self.model if self.model is not None and arch == self.arch_key else self._build_model(mcfg)
+        # a quantised encoder has no fp32 weights to load into, so speed mode always rebuilds
+        reuse = self.model is not None and arch == self.arch_key and not self.encoder_int8
+        model = self.model if reuse else self._build_model(mcfg)
         model_state = model.state_dict()
         matched = {k: v for k, v in state.items() if k in model_state and v.shape == model_state[k].shape}
         if len(matched) < len(model_state):
@@ -474,7 +587,8 @@ class SearchEngine:
         dsca_mode = mcfg.get("dsca_mode", "keyword") or "keyword"
         with self.model_lock:
             model.load_state_dict(matched)
-            self.model, self.arch_key = model, arch
+            int8 = self._quantize_encoder(model)
+            self.model, self.arch_key, self.encoder_int8 = model, arch, int8
             self.frame_layout = "mfgf" if arch[0] == "mfgf" else "uniform"
             if dsca_mode != self.decomposer.mode:      # sub-prompts must be built the way the checkpoint was trained
                 self.decomposer = TextDecomposer(language="en", mode=dsca_mode)
@@ -490,10 +604,27 @@ class SearchEngine:
             # joint runs train on all three subsets, but their config keeps the name of one of them
             "sub_dataset": "all" if "joint" in cp.name else (cfg.get("data") or {}).get("sub_dataset"),
             "metrics": {k: round(float(v), 2) for k, v in metrics.items() if isinstance(v, (int, float))},
+            "encoder_int8": int8,
         }
         print(f"[+] Loaded checkpoint {self.checkpoint_info['name']} ({len(matched)} layers, "
-              f"epoch {self.checkpoint_info['epoch']})")
+              f"epoch {self.checkpoint_info['epoch']}{', int8 video encoder' if int8 else ''})")
         return self.checkpoint_info
+
+    def _quantize_encoder(self, model: DAMRModel) -> bool:
+        """Speed mode (ENCODER_INT8): dynamic int8 nn.Linear layers in the video encoder, in place. CPU only; the
+        text encoder stays fp32. Returns whether the encoder is quantised."""
+        if not ENCODER_INT8 or self.device.type != "cpu":
+            return False
+        try:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")      # torch.ao eager quantisation prints a torchao migration notice
+                torch.ao.quantization.quantize_dynamic(model.video_encoder, {torch.nn.Linear}, dtype=torch.qint8,
+                                                       inplace=True)
+            return True
+        except Exception as e:
+            print(f"[!] int8 video encoder unavailable ({e}): using fp32.")
+            return False
 
     @property
     def ckpt_key(self) -> str:
@@ -715,8 +846,10 @@ class SearchEngine:
                      if (img := cv2.imdecode(np.frombuffer(j, np.uint8), cv2.IMREAD_COLOR)) is not None]
             if not crops:
                 continue
-            probs, hists = [], {"top_color": [], "bottom_color": []}
+            probs, hists, sits = [], {"top_color": [], "bottom_color": []}, []
             for img, kp in zip(crops, self._pose_keypoints(crops)):
+                if (sp := _sit_score(kp)) is not None:
+                    sits.append(sp)
                 x = cv2.resize(img, (80, 160)).transpose(2, 0, 1)[None].astype(np.float32)  # BGR, NCHW, 0..255
                 res = self.attr_model([x])
                 probs.append(res[self.attr_output].reshape(-1))
@@ -730,6 +863,17 @@ class SearchEngine:
             for key, hs in hists.items():
                 if hs:
                     t.attrs[key] = {c: round(float(v), 4) for c, v in zip(COLOR_NAMES, np.mean(hs, axis=0))}
+            if len(sits) >= 2:   # one stray pose is not enough
+                t.attrs["sit_pose"] = float(np.mean(sits))
+
+    @staticmethod
+    def _actions(analysis: Analysis) -> None:
+        """act_run/act_walk/act_stand(/act_sit) and the median speed per track, from its final boxes."""
+        for t in analysis.tracks.values():
+            speeds = track_speeds(t.boxes, analysis.fps, analysis.width, analysis.height)
+            if len(speeds):
+                t.attrs["speed"] = float(np.median(speeds))
+                t.attrs.update(action_probs(speeds, t.attrs.get("sit_pose")))
 
     # ------------------------------------------------------------------ analysis
     def analyze(self, video_path: Path, video_id: str, analysis_id: str, params: Dict[str, Any],
@@ -788,10 +932,20 @@ class SearchEngine:
             self._extract_crops(video_path, analysis, list(tracks), progress)
             self._attributes(analysis, list(tracks))
             self._reid(analysis, list(tracks))
-            if params.get("clip", True):
-                self._clip_embed(analysis, list(tracks), progress)
-            self.encode_tracks(analysis, progress=progress)
-            self._stitch(video_path, analysis, progress)
+            if self.reid_model is not None:
+                # Stitch first (it needs only re-ID and gender), then run CLIP and the video model once per final
+                # track. Encoding before stitching repeated about half of that work (station clip: 280 encodes
+                # for 149 final tracks).
+                self._stitch(video_path, analysis, progress, encode=False)
+                if params.get("clip", True):
+                    self._clip_embed(analysis, list(analysis.tracks), progress)
+                self.encode_tracks(analysis, progress=progress)
+            else:   # without the re-ID model, stitching compares V_app, so the tracks must be encoded first
+                if params.get("clip", True):
+                    self._clip_embed(analysis, list(tracks), progress)
+                self.encode_tracks(analysis, progress=progress)
+                self._stitch(video_path, analysis, progress)
+            self._actions(analysis)   # after stitching: merged tracks have their final boxes
         return analysis
 
     @staticmethod
@@ -1059,12 +1213,13 @@ class SearchEngine:
         if order and all(analysis.tracks[t].clip_emb is not None for t in order):
             analysis.emb["CLIP"] = torch.stack([analysis.tracks[t].clip_emb for t in order])
 
-    def _stitch(self, video_path: Path, analysis: Analysis, progress: ProgressCb) -> None:
+    def _stitch(self, video_path: Path, analysis: Analysis, progress: ProgressCb, encode: bool = True) -> None:
         """
         Re-ID across gaps (occlusions): joins tracklet B onto A when B starts at most STITCH_MAX_GAP_S after A
         ends, near where A was last seen, the attribute model does not see a different gender, and the OpenVINO
-        re-ID embeddings agree (V_app similarity is the fallback when the re-ID model is unavailable). Merged tracks are re-cropped and re-encoded,
-        then ids are renumbered by start time.
+        re-ID embeddings agree (V_app similarity is the fallback when the re-ID model is unavailable). Merged tracks
+        are re-cropped (and, with encode, CLIP/video-encoded), then ids are renumbered by start time. With
+        encode=False the caller encodes every track afterwards.
         """
         fps = analysis.fps
         tr = analysis.tracks
@@ -1087,7 +1242,10 @@ class SearchEngine:
                     sim = float(a.reid @ b.reid)
                     ok = sim >= REID_MIN_SIM
                 else:
-                    sim = float(analysis.track_emb[a.id]["V_app"] @ analysis.track_emb[b.id]["V_app"])
+                    ea, eb = analysis.track_emb.get(a.id), analysis.track_emb.get(b.id)
+                    if ea is None or eb is None:   # not encoded yet (stitching before encoding)
+                        continue
+                    sim = float(ea["V_app"] @ eb["V_app"])
                     ok = sim >= STITCH_MIN_SIM
                 if ok:
                     cands.append((sim, a.id, b.id, gap))
@@ -1126,9 +1284,10 @@ class SearchEngine:
         self._extract_crops(video_path, analysis, merged, lambda *a: None)
         self._attributes(analysis, merged)
         self._reid(analysis, merged)
-        if analysis.params.get("clip", True):
-            self._clip_embed(analysis, merged)
-        self.encode_tracks(analysis, tids=merged, progress=progress, stage="stitch")
+        if encode:
+            if analysis.params.get("clip", True):
+                self._clip_embed(analysis, merged)
+            self.encode_tracks(analysis, tids=merged, progress=progress, stage="stitch")
 
         # Renumber 1..N by start time so ids read naturally in the UI
         order = sorted(tr.values(), key=lambda t: t.start)
@@ -1139,7 +1298,10 @@ class SearchEngine:
             t.id = remap[t.id]
         for s in analysis.stitch_log:
             s["into"] = remap[head_of[s["from"]]]
-        self._rebuild_matrices(analysis)
+        if encode:
+            self._rebuild_matrices(analysis)
+        else:
+            progress("stitch", 1, 1)
 
     # ------------------------------------------------------------------ search
     def search(self, analysis: Analysis, prompt: str) -> Dict[str, Any]:
@@ -1156,7 +1318,7 @@ class SearchEngine:
             "q_mot": concepts["q_mot"],
             "app_keywords": concepts["app_keywords"],
             "mot_keywords": concepts["mot_keywords"],
-            "constraints": query_attributes(prompt) if self.attr_model is not None else [],
+            "constraints": query_attributes(prompt, with_attrs=self.attr_model is not None),
             "scores": [],
         }
         if not analysis.tracks:

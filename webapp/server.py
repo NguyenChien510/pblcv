@@ -287,7 +287,7 @@ def create_app(engine: SearchEngine, uploads_dir: Path, samples_dir: Path, max_u
             return {"analysis_id": aid}
 
         job = jobs.submit("analyze", {
-            "prepare": (0, 3), "detect": (3, 45), "crops": (45, 50), "clip": (50, 56), "encode": (56, 92), "stitch": (92, 100),
+            "prepare": (0, 3), "detect": (3, 45), "crops": (45, 50), "stitch": (50, 55), "clip": (55, 62), "encode": (62, 100),
         }, run)
         return {"analysis_id": None, "cached": False, "job_id": job.id}
 

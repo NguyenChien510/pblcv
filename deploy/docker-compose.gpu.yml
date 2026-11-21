@@ -1,0 +1,15 @@
+# GPU override (host needs the NVIDIA driver + NVIDIA Container Toolkit). From this folder:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+services:
+  app:
+    build:
+      args:
+        TORCH_INDEX: cu126
+    image: pblcv-webdemo:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
