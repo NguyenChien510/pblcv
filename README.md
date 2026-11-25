@@ -188,7 +188,7 @@ Quy tắc chọn trên val đã chọn m3c (val 85,74 so với m3j 84,38, `resul
 
 ## 6. Hướng Dẫn Sử Dụng
 
-> Cài đặt (Linux/Windows), tải checkpoint, chạy web demo và deploy bằng Docker: xem **[INSTALL.md](INSTALL.md)**.
+> Cài đặt (Linux/Windows), tải checkpoint, chạy web demo và deploy (Docker, AWS EC2 + CI/CD): xem **[INSTALL.md](INSTALL.md)**.
 
 Dữ liệu được tìm theo thứ tự `--data_root`, rồi biến môi trường `DATA_ROOT`, rồi `../dataset`, `./dataset`, `/content/dataset`… Mỗi tập con cần có thư mục `captions/` chứa `train.csv`, `val.csv`, `test.csv` (cột `video_id`) và các file `*.json`. **Nếu không tìm thấy caption, dataset sẽ âm thầm tạo dữ liệu giả** (32 train / 16 val); số liệu vô nghĩa thì kiểm tra điều này trước.
 
@@ -227,13 +227,60 @@ python test.py --sub_dataset TVPReid-PRID --dashboard                     # vẽ
 ```bash
 python web_demo.py --port 8000 --samples_dir samples
 ```
+Bản đang chạy: **https://findperson.duckdns.org**. Cần đăng nhập, và chỉ vào được khi máy EC2 đang bật.
+
 Web demo gồm hai bước:
-1. **Phân tích** (chạy một lần cho mỗi video): YOLO + BoT-SORT bám người, model re-ID tách và nối các tracklet, rồi mã hóa từng tracklet bằng DSCA.
-2. **Tìm kiếm** (chạy cho mỗi câu truy vấn).
+1. **Phân tích:** chạy một lần cho mỗi video, tốn thời gian.
+2. **Tìm kiếm:** chạy mỗi lần gõ câu mô tả, gần như tức thì.
 
-Ngoài điểm DSCA, demo còn kiểm tra các thuộc tính hỏi trong câu (giới tính, màu áo/quần, túi, balo, mũ) bằng model thuộc tính OpenVINO, và cộng thêm một nhánh CLIP ẩn có trọng số 0,2. Nhánh CLIP chỉ có trong demo, không dùng cho số liệu bài báo.
+```
+Tải video ─► Proxy H.264 720p ─► [Phân tích, 1 lần] ─► chỉ mục trong RAM ─► [Tìm kiếm, mỗi câu] ─► xếp hạng + timeline
+```
 
-Checkpoint khuyến nghị là `best.pth` ở [release v2.0](https://github.com/NguyenChien510/pblcv/releases/tag/v2.0), tức recipe m3c; xem INSTALL.md. Chi tiết kiến trúc web xem `CLAUDE.md`.
+**Phân tích** (`webapp/engine.py::SearchEngine.analyze`):
+
+| Bước | Model | Việc |
+| :--- | :--- | :--- |
+| ① Phát hiện + theo vết | YOLOv8n (960px) + BoT-SORT | Bám từng người qua mọi frame; mỗi 0,25 s lấy một mẫu re-ID |
+| ② Tách track sai | OpenVINO re-ID `0277` | Cắt track khi khung nhảy sang người khác |
+| ③ Cắt ảnh | | 20 khung cho mỗi người theo layout `mfgf`, ưu tiên khung ít bị che |
+| ④ Thuộc tính | OpenVINO attributes + YOLOv8n-pose | Giới tính, túi, balo, mũ, tóc dài; màu áo và quần; tư thế ngồi |
+| ⑤ Nối track | Re-ID | Nối hai đoạn của cùng một người sau khi bị che, tối đa 8 s |
+| ⑥ CLIP | CLIP ViT-B/16 | Embedding ảnh cho nhánh CLIP ẩn |
+| ⑦ Mã hóa | **SpaceTime-DSCA (m3c)** | Tạo $V_{app}$, $V_{mot}$, $V_{video}$ cho từng người |
+| ⑧ Hành động | | Đứng / đi / chạy tính từ tốc độ khung; ngồi tính từ tư thế |
+
+Bước ⑤ chạy trước ⑥ và ⑦, nên mỗi người chỉ được mã hóa một lần.
+
+**Tìm kiếm:** câu truy vấn được tách bằng DSCA và mã hóa bằng BERT, rồi tính điểm cuối:
+$$\text{điểm} = \frac{0{,}45\cos(T_{full},V_{video}) + 0{,}45\cos(T_{app},V_{app}) + 0{,}09\cos(T_{mot},V_{mot}) + 0{,}2\,\text{CLIP}}{1{,}2} - \text{phạt thuộc tính}$$
+- Ba trọng số DSCA được chuẩn hoá để cộng lại bằng 1.
+- *Phạt thuộc tính* là $\sum w\,(1-p)$, lấy từ các ràng buộc đọc ra trong câu (giới tính, màu áo/quần, túi, balo, mũ, hành động) so với thuộc tính đã đo.
+- Nhánh CLIP và phần thuộc tính chỉ có trong demo, **không** dùng cho số liệu bài báo.
+- Trên hai video tự gán nhãn (24 câu), CLIP đưa số câu đúng ở hạng 1 từ 7/9 lên 8/9 và từ 12/15 lên 15/15.
+
+**Speed mode** đang bật (trên CPU):
+- CLIP chỉ dùng 1 ảnh cho mỗi người;
+- bộ mã hóa video chạy int8.
+
+Đổi lại, mỗi video tự gán nhãn mất tối đa 1 câu đúng ở hạng 1. Muốn tắt, đặt `CLIP_CROPS = 3` và `ENCODER_INT8 = False` trong `webapp/engine.py`.
+
+Checkpoint khuyến nghị là `best.pth` ở [release v2.0](https://github.com/NguyenChien510/pblcv/releases/tag/v2.0), tức recipe m3c; xem INSTALL.md. Chi tiết kỹ thuật của web xem `CLAUDE.md`.
+
+### 6.5. Deploy và CI/CD
+
+Mỗi lần push lên `main` có sửa code app, GitHub Actions tự build Docker image và cập nhật server:
+
+```
+git push ─► GitHub Actions: build image ─► ghcr.io/nguyenchien510/pblcv-webdemo:<commit>
+                         └─► SSH vào EC2 ─► pull, chạy lại, chờ app trả lời (lỗi thì quay về bản trước)
+```
+
+- **Server:** AWS EC2 `c7i.4xlarge` (16 vCPU, 32 GB) ở Singapore, sau Caddy (HTTPS tự động và mật khẩu chung).
+- **Tên miền:** DuckDNS miễn phí, tự trỏ về IP mới mỗi lần bật máy.
+- **Hướng dẫn:**
+  - từng bước, gồm cả truy cập SSH: [INSTALL.md](INSTALL.md) mục 6;
+  - VPS thường và Google Cloud GPU: mục 4 và 5.
 
 ---
 
@@ -249,5 +296,6 @@ Checkpoint khuyến nghị là `best.pth` ở [release v2.0](https://github.com/
 | `experiments/` | Quy trình nhiều seed/ablation, bootstrap CI, hình và bảng cho bài báo, notebook Kaggle |
 | `results/` | Kết quả thật theo từng đợt chạy (`v6`…`v9`), CI, file chọn cấu hình trên val |
 | `webapp/`, `web_demo.py` | Web demo (FastAPI + giao diện tĩnh) |
-| `deploy/` | Docker + Caddy |
+| `deploy/` | Docker + Caddy, override GPU, script cài EC2 (`ec2-setup.sh`) và script deploy (`remote-deploy.sh`) |
+| `.github/workflows/deploy.yml` | CI/CD: build image lên GHCR, deploy lên EC2 |
 | `reports/` | Hình kiến trúc, lịch sử train, dashboard |

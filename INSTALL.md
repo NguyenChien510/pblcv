@@ -300,6 +300,50 @@ Kiểm tra lại trong Billing → Reports rằng chi phí đã về 0.
 
 ## 6. Deploy lên AWS EC2 (c7i.4xlarge) + tên miền DuckDNS + CI/CD từ GitHub
 
+Web đang chạy: **https://findperson.duckdns.org**
+- Tài khoản `demo`; mật khẩu là mật khẩu đã nhập khi chạy `ec2-setup.sh`. Mật khẩu không ghi trong repo vì repo public; quên thì đổi theo mục F.
+- Chỉ truy cập được khi máy EC2 đang bật.
+
+### Truy cập EC2 bằng SSH
+
+Cần file key `pblcv.pem`, tải về lúc tạo máy, và máy phải đang bật. Tên miền DuckDNS luôn trỏ về IP hiện tại của máy, nên không cần tra IP.
+
+```bash
+chmod 400 ~/Downloads/pblcv.pem                                    # một lần: SSH từ chối key ai cũng đọc được
+ssh -i ~/Downloads/pblcv.pem ubuntu@findperson.duckdns.org
+```
+
+Trên Windows (PowerShell) dùng cùng lệnh, chỉ đổi đường dẫn:
+```powershell
+ssh -i $HOME\Downloads\pblcv.pem ubuntu@findperson.duckdns.org
+```
+
+Gõ ngắn hơn bằng cách thêm vào `~/.ssh/config` trên máy local:
+```
+Host findperson
+    HostName findperson.duckdns.org
+    User ubuntu
+    IdentityFile ~/Downloads/pblcv.pem
+```
+Từ đó chỉ cần `ssh findperson`, `scp file.mp4 findperson:~` hoặc `ssh findperson 'lệnh'`.
+
+Lệnh hay dùng trên EC2:
+
+| Việc | Lệnh |
+| :--- | :--- |
+| Trạng thái container | `cd ~/pblcv/deploy && docker compose ps` |
+| Xem log app (Ctrl+C để thoát) | `cd ~/pblcv/deploy && docker compose logs -f app` |
+| Khởi động lại app | `cd ~/pblcv/deploy && docker compose restart app` |
+| Image đang chạy | `grep APP_IMAGE ~/pblcv/deploy/.env` |
+| Đĩa, RAM | `df -h / && free -h` |
+| DuckDNS lần cập nhật gần nhất | `journalctl -u duckdns.service -n 3 --no-pager` |
+| Tắt máy từ bên trong (như *Stop* trên console) | `sudo shutdown -h now` |
+
+Lỗi thường gặp:
+- **`Connection timed out`:** máy đang tắt, hoặc vừa bật và DuckDNS chưa kịp cập nhật IP. Chờ khoảng 30 giây rồi thử lại.
+- **`REMOTE HOST IDENTIFICATION HAS CHANGED`:** chỉ xảy ra khi đã tạo máy EC2 mới mà vẫn dùng tên miền cũ. Chạy `ssh-keygen -R findperson.duckdns.org` rồi SSH lại.
+- **`permission denied ... docker.sock`:** đang dùng chính phiên SSH vừa chạy `ec2-setup.sh`. Thoát ra SSH lại, hoặc thêm `sudo` trước lệnh `docker`.
+
 Mỗi lần push lên `main` có sửa code app, GitHub tự build image và cập nhật server:
 
 ```
@@ -354,7 +398,7 @@ Workflow và hai script phải nằm trên nhánh `main` (đã push). Lần push
 ### B. Tên miền miễn phí DuckDNS (một lần)
 
 1. Vào https://www.duckdns.org, đăng nhập bằng GitHub hoặc Google.
-2. Ô *sub domain* gõ một tên, ví dụ `pblcv-demo`, rồi bấm *add domain*. Bạn được `pblcv-demo.duckdns.org`. Cột IP để gì cũng được, script sẽ tự cập nhật.
+2. Ô *sub domain* gõ một tên, ví dụ `findperson`, rồi bấm *add domain*. Bạn được `findperson.duckdns.org`. Cột IP để gì cũng được, script sẽ tự cập nhật.
 3. Chép **token** ở đầu trang. Giữ bí mật: ai có token đều đổi được IP của tên miền này.
 
 Ghi chú:
@@ -371,7 +415,7 @@ Ghi chú:
    | Name | `pblcv-demo` |
    | AMI | **Ubuntu Server 24.04 LTS**, 64-bit (x86) |
    | Instance type | **`c7i.4xlarge`** |
-   | Key pair | **Create new key pair**: ED25519, `.pem`; trình duyệt tải về `pblcv-key.pem`, giữ kỹ |
+   | Key pair | **Create new key pair**: ED25519, `.pem`; trình duyệt tải về `pblcv.pem`, giữ kỹ |
    | Network settings | Tạo security group mới: bật **Allow SSH**, **Allow HTTPS**, **Allow HTTP** từ *Anywhere* |
    | Storage | **30 GiB gp3** |
 
@@ -389,15 +433,15 @@ Ghi chú:
 Trên máy local, lấy *Public IPv4 address* của máy ở trang Instances:
 
 ```bash
-chmod 400 ~/Downloads/pblcv-key.pem
-ssh -i ~/Downloads/pblcv-key.pem ubuntu@<PUBLIC_IP>
+chmod 400 ~/Downloads/pblcv.pem
+ssh -i ~/Downloads/pblcv.pem ubuntu@<PUBLIC_IP>
 ```
 
 Trên EC2:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NguyenChien510/pblcv/main/deploy/ec2-setup.sh -o ec2-setup.sh
-bash ec2-setup.sh pblcv-demo.duckdns.org
+bash ec2-setup.sh findperson.duckdns.org
 ```
 
 Script hỏi **mật khẩu demo** và **token DuckDNS**; cả hai không hiện lên màn hình. Mất khoảng 5 phút, và làm các việc sau:
@@ -416,14 +460,14 @@ Cuối cùng script in ra giá trị cần điền vào GitHub và **private key
 
    | Tab | Tên | Giá trị |
    | :--- | :--- | :--- |
-   | Variables | `EC2_HOST` | `pblcv-demo.duckdns.org` |
+   | Variables | `EC2_HOST` | `findperson.duckdns.org` |
    | Variables | `EC2_USER` | chỉ cần nếu không phải `ubuntu` |
    | Secrets | `EC2_SSH_KEY` | toàn bộ private key script in ra, gồm cả dòng `BEGIN`/`END` |
 
 2. **Chạy deploy:** tab **Actions** → *Build and deploy web demo* → **Run workflow**.
    - Job `build` dùng lại cache, nên nhanh.
    - Job `deploy` lần đầu phải kéo image vài GB về EC2, mất vài phút. Sau đó nó chờ app trả lời mới báo xanh.
-3. **Mở web:** vào `https://pblcv-demo.duckdns.org`, đăng nhập `demo` / mật khẩu đã đặt. Caddy tự xin chứng chỉ HTTPS ở lần truy cập đầu.
+3. **Mở web:** vào `https://findperson.duckdns.org`, đăng nhập `demo` / mật khẩu đã đặt. Caddy tự xin chứng chỉ HTTPS ở lần truy cập đầu.
 
 Server đăng nhập GHCR bằng token tạm của chính job, nên image để private cũng kéo được, không cần làm gì thêm.
 
@@ -438,10 +482,17 @@ Server đăng nhập GHCR bằng token tạm của chính job, nên image để 
   - App không trả lời trong 5 phút thì workflow báo lỗi kèm log, và server tự chạy lại image trước đó.
   - Push lúc máy đang tắt thì job deploy báo lỗi; bật máy rồi bấm *Re-run failed jobs*.
 - **Mất dữ liệu khi khởi động lại:** video đã upload và kết quả phân tích bị xoá mỗi lần container khởi động lại. Đây là thiết kế hiện tại của app.
-- **Xem log:** `ssh -i pblcv-key.pem ubuntu@pblcv-demo.duckdns.org 'cd pblcv/deploy && docker compose logs -f app'`.
-- **Đổi mật khẩu:** trên EC2 chạy lại `bash ec2-setup.sh pblcv-demo.duckdns.org`, rồi `cd ~/pblcv/deploy && docker compose up -d`.
-  - Script chạy lại sẽ bỏ qua cài đặt và tải model đã có.
-  - Script cũng in ra một SSH key mới, nhưng key cũ trong GitHub vẫn dùng được, không cần đổi secret.
+- **Xem log và các lệnh quản trị khác:** xem mục *Truy cập EC2 bằng SSH* ở đầu mục 6.
+- **Đổi hoặc quên mật khẩu:** SSH vào EC2 rồi chạy đoạn dưới. Mật khẩu mới gõ vào sẽ không hiện lên.
+  ```bash
+  cd ~/pblcv/deploy
+  read -rsp "Mật khẩu mới: " P; echo
+  H=$(sudo docker run --rm caddy:2 caddy hash-password --plaintext "$P"); unset P
+  [ -n "$H" ] && sed -i "/^AUTH_HASH=/c\\AUTH_HASH='$H'" .env && sudo docker compose up -d --force-recreate caddy
+  ```
+  - Phải có `sudo` nếu chạy trong cùng phiên SSH vừa chạy `ec2-setup.sh`, vì quyền nhóm `docker` chỉ có hiệu lực từ lần đăng nhập sau.
+  - `[ -n "$H" ]` giữ nguyên file `.env` nếu không tạo được hash.
+  - Chạy lại `ec2-setup.sh` cũng đổi được mật khẩu, nhưng sẽ tạo thêm một SSH key thừa.
 
 ### G. Theo dõi chi phí và dọn dẹp
 
