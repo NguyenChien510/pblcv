@@ -143,7 +143,11 @@ Data flow: `data/dataset.py` → `models/damr_main.py::DAMRModel` → `loss/crit
 - **Admin** (`/admin`, `webapp/admin.py`, `webapp/monitor.py`): users need no login; only `/admin` has a password.
   - **Password.** The hash is scrypt from the standard library, made with `python -m webapp.admin hash-password`. It is read from `app_settings` on Supabase (the admin page can change it), else from `ADMIN_PASSWORD_HASH`.
   - **Session.** An HMAC-signed cookie valid for 12 h. Five wrong passwords from one IP within 10 min lock that IP out for 10 min.
-  - **Page contents.** CPU/RAM/disk (psutil), jobs of both managers with IP and video plus cancel, people online (IPs seen within 5 min), blocked IPs, the gallery (delete, re-analyse), and the activity log (memory, plus Supabase `activity_log` kept 30 days and flushed every 5 s and at shutdown).
+  - **Page contents.** Three tabs, all live (polled every 2 s):
+    - **overview:** analysis jobs only (the running one with a progress bar, the stage in plain words, elapsed and remaining time, cancel; the queue; recent results as one line each: video, people found, duration, IP); people online with what they are doing in plain words; CPU/RAM; gallery size;
+    - **gallery:** delete, re-analyse;
+    - **security:** blocked IPs, password.
+    - The activity log tab and its Supabase `activity_log` writes were removed on request; `Monitor.event` keeps a small in-memory ring for diagnostics only.
   - **Client IP.** uvicorn trusts `X-Forwarded-For` only with `TRUST_PROXY=1`, i.e. behind Caddy, where the app port is reachable only from Caddy.
   - **Public-site guards:**
     - one queued or running analysis per IP;

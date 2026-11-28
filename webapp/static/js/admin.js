@@ -1,51 +1,59 @@
-// /admin: system, jobs and queue, people online, blocked IPs, gallery and activity log. Polls the server every 3 s.
+// /admin: live view of analyses (running, waiting, recent), people online, the gallery and security.
+// Polls the server every 2 s; only analysis jobs are shown (preparing, saving and loading are internal steps).
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const REFRESH_MS = 2000;
 
 const T = {
   vi: {
-    tab_overview: "Tổng quan", tab_gallery: "Thư viện", tab_activity: "Nhật ký", tab_security: "Bảo mật",
     title: "Quản trị", login_hint: "Nhập mật khẩu quản trị để xem hệ thống.", login: "Đăng nhập", back: "← Về trang tìm kiếm",
-    open_app: "Mở trang tìm kiếm", logout: "Đăng xuất", jobs: "Job và hàng đợi", online: "Đang online (5 phút)",
-    blocked: "IP bị chặn", block: "Chặn", unblock: "Bỏ chặn", gallery: "Thư viện (Supabase)", activity: "Nhật ký hoạt động",
-    all_actions: "Mọi sự kiện", src_memory: "Từ lúc server chạy", src_db: "Lịch sử (Supabase, 30 ngày)",
-    password: "Đổi mật khẩu quản trị", save: "Lưu", ip_ph: "IP", reason_ph: "Lý do", ip_filter: "Lọc theo IP",
-    pw_cur: "Mật khẩu hiện tại", pw_new: "Mật khẩu mới (≥ 8 ký tự)", pw_new2: "Nhập lại mật khẩu mới",
-    cpu: "CPU", ram: "RAM", proc: "Tiến trình app", disk: "Đĩa còn trống", uptime: "Đã chạy", storage: "Thư viện Supabase",
-    cache: "Cache trên đĩa", model: "Checkpoint", queue: "Hàng đợi", running: "chạy", waiting: "chờ",
-    h_state: "Trạng thái", h_kind: "Loại", h_video: "Video", h_ip: "IP", h_progress: "Tiến độ", h_time: "Thời gian",
-    h_created: "Gửi lúc", h_req: "Lượt", h_seen: "Lần cuối", h_path: "Đang làm", h_ua: "Trình duyệt", h_reason: "Lý do",
-    h_name: "Tên", h_size: "Dung lượng", h_people: "Số người", h_uploader: "IP upload", h_date: "Ngày", h_opens: "Lượt mở",
-    h_ts: "Lúc", h_action: "Sự kiện", h_detail: "Chi tiết", cancel: "Huỷ", del: "Xoá", reanalyse: "Phân tích lại",
-    none: "Không có", no_gallery: "Chưa cấu hình Supabase (SUPABASE_URL): không có thư viện.", ago: "{s} giây",
-    confirm_del: "Xoá video \"{n}\" khỏi thư viện? Không khôi phục được.", confirm_block: "Chặn IP {ip}? Job của IP này sẽ bị huỷ.",
-    pw_mismatch: "Hai mật khẩu mới không giống nhau", pw_ok: "Đã đổi mật khẩu", done: "Xong", err: "Lỗi",
-    supa_down: "Supabase không truy cập được: {e}", gallery_sum: "{n} video · {used} / {limit} MB", locked: "Sai quá nhiều lần, thử lại sau 10 phút",
-    kind_prepare: "Chuẩn bị video", kind_analyze: "Phân tích", kind_fetch: "Tải từ thư viện",
-    kind_load: "Nạp kết quả", kind_save_video: "Lưu video", kind_save_analysis: "Lưu kết quả",
-    st_queued: "chờ", st_running: "chạy", st_done: "xong", st_error: "lỗi", st_cancelled: "huỷ",
+    open_app: "Mở trang tìm kiếm", logout: "Đăng xuất",
+    tab_overview: "Tổng quan", tab_gallery: "Thư viện", tab_security: "Bảo mật",
+    now: "Đang phân tích", live: "trực tiếp", offline: "mất kết nối", queue: "Hàng đợi", recent: "Đã phân tích gần đây",
+    online: "Đang online", gallery: "Thư viện (Supabase)", blocked: "IP bị chặn", password: "Đổi mật khẩu quản trị",
+    block: "Chặn", unblock: "Bỏ chặn", save: "Lưu", cancel: "Huỷ", del: "Xoá", reanalyse: "Phân tích lại",
+    ip_ph: "IP", reason_ph: "Lý do", pw_cur: "Mật khẩu hiện tại", pw_new: "Mật khẩu mới (≥ 8 ký tự)", pw_new2: "Nhập lại mật khẩu mới",
+    s_cpu: "CPU", s_ram: "RAM", s_running: "Đang phân tích", s_waiting: "Đang chờ", s_online: "Đang online", s_gallery: "Thư viện",
+    none_running: "Không có video nào đang phân tích.", none_waiting: "Không có video nào đang chờ.",
+    none_recent: "Chưa có lượt phân tích nào từ lúc server chạy.", none_online: "Không có ai trong 5 phút qua.",
+    started: "bắt đầu {t}", elapsed: "đã chạy {d}", eta: "còn khoảng {d}", waited: "chờ {d}", ago: "{d} trước",
+    people: "{n} người", took: "mất {d}", cancelled: "đã huỷ", failed: "lỗi: {e}", again: "phân tích lại", queued_of: "/ tối đa {n}",
+    st_prepare: "Chuẩn bị video", st_detect: "Phát hiện và theo vết", st_crops: "Cắt ảnh từng người", st_stitch: "Nối người bị mất dấu",
+    st_clip: "Mã hoá CLIP", st_encode: "Mã hoá video",
+    do_upload: "Đang tải video lên", do_analyze: "Vừa bấm phân tích", do_search: "Đang tìm người", do_open: "Mở video trong thư viện",
+    do_browse: "Đang xem trang", do_watch: "Đang xem video", do_results: "Đang xem kết quả", do_admin: "Trang quản trị",
+    st_analysing: "đang phân tích", st_waiting: "đang chờ",
+    h_name: "Tên", h_size: "Dung lượng", h_people: "Số người", h_uploader: "IP upload", h_date: "Ngày", h_opens: "Lượt mở", h_reason: "Lý do",
+    no_gallery: "Chưa cấu hình Supabase (SUPABASE_URL): không có thư viện.", gallery_sum: "{n} video · {used} / {limit} MB",
+    supa_down: "Supabase không truy cập được: {e}", none: "Không có",
+    confirm_del: "Xoá video \"{n}\" khỏi thư viện? Không khôi phục được.", confirm_block: "Chặn IP {ip}? Việc phân tích của IP này sẽ bị huỷ.",
+    confirm_cancel: "Huỷ việc phân tích \"{n}\"?", pw_mismatch: "Hai mật khẩu mới không giống nhau", pw_ok: "Đã đổi mật khẩu",
+    done: "Xong", err: "Lỗi",
   },
   en: {
-    tab_overview: "Overview", tab_gallery: "Gallery", tab_activity: "Activity", tab_security: "Security",
     title: "Admin", login_hint: "Enter the admin password to see the system.", login: "Log in", back: "← Back to search",
-    open_app: "Open search page", logout: "Log out", jobs: "Jobs and queue", online: "Online (5 minutes)",
-    blocked: "Blocked IPs", block: "Block", unblock: "Unblock", gallery: "Gallery (Supabase)", activity: "Activity log",
-    all_actions: "All events", src_memory: "Since the server started", src_db: "History (Supabase, 30 days)",
-    password: "Change admin password", save: "Save", ip_ph: "IP", reason_ph: "Reason", ip_filter: "Filter by IP",
-    pw_cur: "Current password", pw_new: "New password (≥ 8 characters)", pw_new2: "New password again",
-    cpu: "CPU", ram: "RAM", proc: "App process", disk: "Free disk", uptime: "Uptime", storage: "Supabase gallery",
-    cache: "Disk cache", model: "Checkpoint", queue: "Queue", running: "running", waiting: "waiting",
-    h_state: "State", h_kind: "Kind", h_video: "Video", h_ip: "IP", h_progress: "Progress", h_time: "Time",
-    h_created: "Submitted", h_req: "Hits", h_seen: "Last seen", h_path: "Doing", h_ua: "Browser", h_reason: "Reason",
-    h_name: "Name", h_size: "Size", h_people: "People", h_uploader: "Uploader IP", h_date: "Date", h_opens: "Opens",
-    h_ts: "Time", h_action: "Event", h_detail: "Detail", cancel: "Cancel", del: "Delete", reanalyse: "Analyse again",
-    none: "None", no_gallery: "Supabase is not configured (SUPABASE_URL): no gallery.", ago: "{s}s",
-    confirm_del: "Delete \"{n}\" from the gallery? This cannot be undone.", confirm_block: "Block IP {ip}? Its jobs will be cancelled.",
-    pw_mismatch: "The two new passwords differ", pw_ok: "Password changed", done: "Done", err: "Error",
-    supa_down: "Supabase unreachable: {e}", gallery_sum: "{n} videos · {used} / {limit} MB", locked: "Too many attempts, try again in 10 minutes",
-    kind_prepare: "Prepare video", kind_analyze: "Analysis", kind_fetch: "Download from gallery",
-    kind_load: "Load result", kind_save_video: "Save video", kind_save_analysis: "Save result",
-    st_queued: "queued", st_running: "running", st_done: "done", st_error: "error", st_cancelled: "cancelled",
+    open_app: "Open search page", logout: "Log out",
+    tab_overview: "Overview", tab_gallery: "Gallery", tab_security: "Security",
+    now: "Analysing now", live: "live", offline: "disconnected", queue: "Queue", recent: "Recent analyses",
+    online: "Online", gallery: "Gallery (Supabase)", blocked: "Blocked IPs", password: "Change admin password",
+    block: "Block", unblock: "Unblock", save: "Save", cancel: "Cancel", del: "Delete", reanalyse: "Analyse again",
+    ip_ph: "IP", reason_ph: "Reason", pw_cur: "Current password", pw_new: "New password (≥ 8 characters)", pw_new2: "New password again",
+    s_cpu: "CPU", s_ram: "RAM", s_running: "Analysing", s_waiting: "Waiting", s_online: "Online", s_gallery: "Gallery",
+    none_running: "No video is being analysed.", none_waiting: "No video is waiting.",
+    none_recent: "No analyses since the server started.", none_online: "Nobody in the last 5 minutes.",
+    started: "started {t}", elapsed: "{d} elapsed", eta: "about {d} left", waited: "waiting {d}", ago: "{d} ago",
+    people: "{n} people", took: "took {d}", cancelled: "cancelled", failed: "error: {e}", again: "re-analysis", queued_of: "/ max {n}",
+    st_prepare: "Preparing video", st_detect: "Detecting and tracking", st_crops: "Cropping each person", st_stitch: "Re-joining lost people",
+    st_clip: "CLIP encoding", st_encode: "Video encoding",
+    do_upload: "Uploading a video", do_analyze: "Started an analysis", do_search: "Searching for someone", do_open: "Opened a gallery video",
+    do_browse: "Browsing", do_watch: "Watching a video", do_results: "Viewing results", do_admin: "Admin page",
+    st_analysing: "analysing", st_waiting: "waiting",
+    h_name: "Name", h_size: "Size", h_people: "People", h_uploader: "Uploader IP", h_date: "Date", h_opens: "Opens", h_reason: "Reason",
+    no_gallery: "Supabase is not configured (SUPABASE_URL): no gallery.", gallery_sum: "{n} videos · {used} / {limit} MB",
+    supa_down: "Supabase unreachable: {e}", none: "None",
+    confirm_del: "Delete \"{n}\" from the gallery? This cannot be undone.", confirm_block: "Block IP {ip}? Its analyses will be cancelled.",
+    confirm_cancel: "Cancel the analysis of \"{n}\"?", pw_mismatch: "The two new passwords differ", pw_ok: "Password changed",
+    done: "Done", err: "Error",
   },
 };
 let lang = (() => { try { return localStorage.getItem("ps.lang") || "vi"; } catch (e) { return "vi"; } })();
@@ -53,7 +61,6 @@ const t = (k, v = {}) => Object.entries(v).reduce((s, [a, b]) => s.replaceAll(`{
 function applyLang() {
   document.documentElement.lang = lang;
   document.querySelectorAll("[data-t]").forEach((el) => { el.textContent = t(el.dataset.t); });
-  if (ov) renderStats();          // tab labels were reset: restore their counts
   document.querySelectorAll("[data-tp]").forEach((el) => { el.placeholder = t(el.dataset.tp); });
   $("lang-btn").textContent = lang === "vi" ? "EN" : "VI";
 }
@@ -75,27 +82,37 @@ async function api(method, url, body) {
   return data;
 }
 
-const mb = (b) => (b / 2 ** 20).toFixed(b >= 2 ** 30 ? 0 : 1);
+const mb = (b) => (b / 2 ** 20).toFixed(1);
 const gb = (b) => (b / 2 ** 30).toFixed(1);
-const dur = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` : s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`);
-const clock = (ts) => new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleString(lang);
-const table = (head, rows, empty = t("none")) =>
-  `<thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.join("") : `<tr><td class="empty" colspan="${head.length}">${esc(empty)}</td></tr>`}</tbody>`;
+const dur = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+  : s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s` : `${Math.max(0, Math.round(s))}s`);
+const when = (ts) => {
+  const d = new Date(typeof ts === "number" ? ts * 1000 : ts);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString(lang) : d.toLocaleString(lang);
+};
+const table = (head, rows) =>
+  `<thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.join("")
+    : `<tr><td class="empty" colspan="${head.length}">${esc(t("none"))}</td></tr>`}</tbody>`;
+const empty = (msg) => `<p class="adm-empty">${esc(msg)}</p>`;
 
-// ------------------------------------------------------------------ overview (every 3 s)
+// ------------------------------------------------------------------ overview (live)
 let ov = null;
 async function refresh() {
   try {
     ov = await api("GET", "/api/admin/overview");
-  } catch (e) { return; }
-  renderStats();
-  renderJobs();
-  renderOnline();
+  } catch (e) {
+    document.querySelectorAll(".live").forEach((el) => { el.classList.add("off"); el.textContent = t("offline"); });
+    return;
+  }
+  document.querySelectorAll(".live").forEach((el) => { el.classList.remove("off"); el.textContent = t("live"); });
+  const analyses = ov.jobs.filter((j) => j.kind === "analyze");
+  renderStats(analyses);
+  renderNow(analyses);
+  renderQueue(analyses);
+  renderRecent(analyses);
+  renderOnline(analyses);
+  renderBlocked();
   $("updated").textContent = new Date().toLocaleTimeString(lang);
-}
-
-function stat(label, value, frac = null, cls = "") {
-  return `<div class="adm-stat ${cls}"><span>${esc(label)}</span><b>${esc(value)}</b>${frac != null ? `<div class="meter"><i style="width:${Math.min(100, frac * 100)}%"></i></div>` : ""}</div>`;
 }
 
 function setCount(tab, n) {
@@ -104,68 +121,117 @@ function setCount(tab, n) {
   if (n) b.insertAdjacentHTML("beforeend", `<span class="count">${n}</span>`);
 }
 
-function renderStats() {
+function stat(label, value, frac = null, warn = false) {
+  return `<div class="adm-stat${warn ? " warn" : ""}"><span>${esc(label)}</span><b>${esc(value)}</b>${
+    frac != null ? `<div class="meter"><i style="width:${Math.min(100, frac * 100)}%"></i></div>` : ""}</div>`;
+}
+
+function renderStats(analyses) {
   const s = ov.system;
-  const active = ov.jobs.filter((j) => j.state === "running" || j.state === "queued");
-  setCount("overview", active.length);
-  setCount("gallery", ov.gallery?.videos || 0);
-  setCount("security", ov.blocked.length);
+  const running = analyses.filter((j) => j.state === "running").length;
+  const waiting = analyses.filter((j) => j.state === "queued").length;
   const parts = [
-    stat(t("cpu"), `${s.cpu_pct.toFixed(0)}% · ${s.cpus} vCPU`, s.cpu_pct / 100, s.cpu_pct > 90 ? "warn" : ""),
-    stat(t("ram"), `${gb(s.ram_used)} / ${gb(s.ram_total)} GB`, s.ram_used / s.ram_total, s.ram_used / s.ram_total > 0.9 ? "warn" : ""),
-    stat(t("proc"), `${gb(s.proc_rss)} GB`),
-    stat(t("disk"), `${gb(s.disk_free)} / ${gb(s.disk_total)} GB`, 1 - s.disk_free / s.disk_total, s.disk_free < 5 * 2 ** 30 ? "warn" : ""),
-    stat(t("queue"), `${active.filter((j) => j.state === "running").length} ${t("running")} · ${active.filter((j) => j.state === "queued").length} ${t("waiting")}`,
-      active.length / ov.limits.max_queue, active.length >= ov.limits.max_queue ? "warn" : ""),
+    stat(t("s_cpu"), `${s.cpu_pct.toFixed(0)}%`, s.cpu_pct / 100, s.cpu_pct > 90),
+    stat(t("s_ram"), `${gb(s.ram_used)} / ${gb(s.ram_total)} GB`, s.ram_used / s.ram_total, s.ram_used / s.ram_total > 0.9),
+    stat(t("s_running"), String(running)),
+    stat(t("s_waiting"), `${waiting} ${t("queued_of", { n: ov.limits.max_queue })}`, waiting / ov.limits.max_queue, waiting >= ov.limits.max_queue),
+    stat(t("s_online"), String(ov.online.length)),
   ];
-  $("sys-line").textContent = `· ${s.checkpoint || "–"} · ${s.device} · ${t("uptime")} ${dur(s.uptime_s)}`;
   if (ov.gallery) {
     const g = ov.gallery;
-    parts.push(g.error ? stat(t("storage"), t("supa_down", { e: g.error.slice(0, 80) }), null, "bad")
-      : stat(t("storage"), `${mb(g.used_bytes)} / ${mb(g.limit_bytes)} MB`, g.used_bytes / g.limit_bytes, g.used_bytes / g.limit_bytes > 0.85 ? "warn" : ""));
-    parts.push(stat(t("cache"), ov.cache_bytes >= 2 ** 30 ? `${gb(ov.cache_bytes)} GB` : `${mb(ov.cache_bytes)} MB`));
+    parts.push(g.error ? `<div class="adm-stat bad"><span>${esc(t("s_gallery"))}</span><small>${esc(t("supa_down", { e: g.error.slice(0, 60) }))}</small></div>`
+      : stat(t("s_gallery"), `${mb(g.used_bytes)} / ${mb(g.limit_bytes)} MB`, g.used_bytes / g.limit_bytes, g.used_bytes / g.limit_bytes > 0.85));
   }
   $("stats").innerHTML = parts.join("");
+  $("sys-line").textContent = `· ${s.checkpoint || "–"} · ${s.device}`;
+  setCount("overview", running + waiting);
+  setCount("gallery", ov.gallery?.videos || 0);
+  setCount("security", ov.blocked.length);
 }
 
-function renderJobs() {
-  const rows = ov.jobs.map((j) => {
-    const live = j.state === "running" || j.state === "queued";
-    const time = j.state === "running" ? `${dur(j.elapsed_s)}${j.eta_s != null ? ` · ETA ${dur(j.eta_s)}` : ""}` : j.started ? dur(j.elapsed_s) : "";
-    return `<tr>
-      <td><span class="badge ${j.state}">${esc(t(`st_${j.state}`))}</span></td>
-      <td>${esc(t(`kind_${j.kind}`))}${j.reanalyse ? " ↻" : ""}</td>
-      <td class="ell" title="${esc(j.error || j.video_name || "")}">${esc(j.video_name || "")}${j.error ? ` <span class="adm-err">⚠ ${esc(j.error)}</span>` : ""}</td>
-      <td class="mono">${esc(j.ip || "")}</td>
-      <td class="num">${j.state === "running" ? `<span class="pbar"><i style="width:${j.pct}%"></i></span>${j.pct}% ${esc(j.stage)}` : ""}</td>
-      <td class="num">${esc(time)}</td>
-      <td class="num">${esc(clock(j.created))}</td>
-      <td>${live ? `<button class="link-danger" data-cancel="${esc(j.id)}">${esc(t("cancel"))}</button>` : ""}</td></tr>`;
-  });
-  $("jobs").innerHTML = table([t("h_state"), t("h_kind"), t("h_video"), t("h_ip"), t("h_progress"), t("h_time"), t("h_created"), ""], rows);
+function renderNow(analyses) {
+  const j = analyses.find((x) => x.state === "running");
+  if (!j) { $("now").innerHTML = empty(t("none_running")); return; }
+  $("now").innerHTML = `
+    <div class="now">
+      <div class="now-top"><b title="${esc(j.video_name)}">${esc(j.video_name || "?")}</b>${j.reanalyse ? `<span class="badge running">${esc(t("again"))}</span>` : ""}</div>
+      <div class="now-sub"><span class="mono">${esc(j.ip || "")}</span> · ${esc(t("started", { t: when(j.started) }))}</div>
+      <div class="now-bar"><i style="width:${j.pct}%"></i></div>
+      <div class="now-meta">
+        <span><b>${Math.round(j.pct)}%</b> · ${esc(T[lang][`st_${j.stage}`] || j.stage || "")}</span>
+        <span class="muted">${esc(t("elapsed", { d: dur(j.elapsed_s) }))}${j.eta_s != null ? ` · ${esc(t("eta", { d: dur(j.eta_s) }))}` : ""}</span>
+        <button class="link-danger" data-cancel="${esc(j.id)}" data-name="${esc(j.video_name)}">${esc(t("cancel"))}</button>
+      </div>
+    </div>`;
 }
 
-function renderOnline() {
+function renderQueue(analyses) {
+  const q = analyses.filter((j) => j.state === "queued").sort((a, b) => a.created - b.created);
   const now = Date.now() / 1000;
-  const working = new Set(ov.jobs.filter((j) => j.state === "running" || j.state === "queued").map((j) => j.ip));
-  const rows = ov.online.map((o) => `<tr>
-    <td class="mono" title="${esc(o.user_agent || "")}">${esc(o.ip)}${working.has(o.ip) ? ' <span class="badge running">job</span>' : ""}</td>
-    <td class="num">${o.requests}</td>
-    <td class="num">${esc(t("ago", { s: Math.round(now - o.last_seen) }))}</td>
-    <td class="mono ell path" title="${esc(o.last_path || "")}">${esc(o.last_path || "")}</td>
-    <td><button class="link-danger" data-block="${esc(o.ip)}">${esc(t("block"))}</button></td></tr>`);
-  $("online").innerHTML = table([t("h_ip"), t("h_req"), t("h_seen"), t("h_path"), ""], rows);   // browser: hover the IP
-  $("blocked").innerHTML = table([t("h_ip"), t("h_reason"), ""], ov.blocked.map((b) => `<tr>
+  $("queue").innerHTML = q.length ? q.map((j, i) => `
+    <div class="row">
+      <span class="pos">#${i + 1}</span>
+      <div class="row-main"><b title="${esc(j.video_name)}">${esc(j.video_name || "?")}</b>
+        <small><span class="mono">${esc(j.ip || "")}</span> · ${esc(t("waited", { d: dur(now - j.created) }))}${j.reanalyse ? ` · ${esc(t("again"))}` : ""}</small></div>
+      <button class="link-danger" data-cancel="${esc(j.id)}" data-name="${esc(j.video_name)}">${esc(t("cancel"))}</button>
+    </div>`).join("") : empty(t("none_waiting"));
+}
+
+function renderRecent(analyses) {
+  const done = analyses.filter((j) => ["done", "error", "cancelled"].includes(j.state))
+    .sort((a, b) => (b.finished || b.created) - (a.finished || a.created)).slice(0, 15);
+  $("recent").innerHTML = done.length ? done.map((j) => {
+    const icon = j.state === "done" ? "✓" : j.state === "cancelled" ? "✕" : "⚠";
+    const what = j.state === "done"
+      ? [j.tracks != null ? t("people", { n: j.tracks }) : "", t("took", { d: dur(j.elapsed_s) })].filter(Boolean).join(" · ")
+      : j.state === "cancelled" ? t("cancelled") : t("failed", { e: j.error || "?" });
+    return `
+    <div class="row ${j.state}">
+      <span class="icon">${icon}</span>
+      <div class="row-main"><b title="${esc(j.video_name)}">${esc(j.video_name || "?")}</b> <span class="what">${esc(what)}</span>
+        <small><span class="mono">${esc(j.ip || "")}</span> · ${esc(when(j.finished || j.created))}${j.reanalyse ? ` · ${esc(t("again"))}` : ""}</small></div>
+    </div>`;
+  }).join("") : empty(t("none_recent"));
+}
+
+function doing(o) {
+  const m = o.last_method, p = o.last_path || "";
+  if (m === "POST" && p === "/api/videos") return t("do_upload");
+  if (p.endsWith("/analyze")) return t("do_analyze");
+  if (p.endsWith("/search")) return t("do_search");
+  if (p.startsWith("/api/gallery") && p.endsWith("/open")) return t("do_open");
+  if (p.endsWith("/stream")) return t("do_watch");
+  if (p.startsWith("/api/analyses/")) return t("do_results");
+  if (p === "/admin") return t("do_admin");
+  return t("do_browse");
+}
+
+function renderOnline(analyses) {
+  const now = Date.now() / 1000;
+  const state = {};
+  analyses.forEach((j) => {
+    if (j.state === "running") state[j.ip] = "st_analysing";
+    else if (j.state === "queued" && !state[j.ip]) state[j.ip] = "st_waiting";
+  });
+  $("online").innerHTML = ov.online.length ? ov.online.map((o) => `
+    <div class="row">
+      <div class="row-main"><b class="mono" title="${esc(o.user_agent || "")}">${esc(o.ip)}</b>${state[o.ip] ? ` <span class="badge running">${esc(t(state[o.ip]))}</span>` : ""}
+        <small>${esc(doing(o))} · ${esc(t("ago", { d: dur(now - o.last_seen) }))}</small></div>
+      <button class="link-danger" data-block="${esc(o.ip)}">${esc(t("block"))}</button>
+    </div>`).join("") : empty(t("none_online"));
+}
+
+function renderBlocked() {
+  $("blocked").innerHTML = table(["IP", t("h_reason"), ""], ov.blocked.map((b) => `<tr>
     <td class="mono">${esc(b.ip)}</td><td class="wrap">${esc(b.reason)}</td>
     <td><button class="link-act" data-unblock="${esc(b.ip)}">${esc(t("unblock"))}</button></td></tr>`));
 }
 
-// ------------------------------------------------------------------ gallery (on load and after actions)
+// ------------------------------------------------------------------ gallery (on demand)
 async function loadGallery() {
   let g;
   try { g = await api("GET", "/api/admin/gallery"); } catch (e) { return; }
   if (!g.enabled) { $("gallery-sum").textContent = t("no_gallery"); $("gallery").innerHTML = ""; return; }
-  if (g.error) $("gallery-sum").textContent = t("supa_down", { e: g.error });
   const rows = g.videos.map((v) => {
     const an = v.analyses || [];
     const size = v.proxy_bytes + (v.thumb_bytes || 0) + an.reduce((a, x) => a + x.blob_bytes, 0);
@@ -175,47 +241,29 @@ async function loadGallery() {
       <td class="num">${mb(size)} MB</td>
       <td class="num">${an.length ? an[0].n_tracks : "–"}</td>
       <td class="mono">${esc(v.uploader_ip || "")}</td>
-      <td class="num">${esc(clock(v.created_at))}</td>
+      <td class="num">${esc(when(v.created_at))}</td>
       <td class="num">${v.opens ?? 0}</td>
       <td><button class="link-act" data-reanalyse="${esc(v.id)}">${esc(t("reanalyse"))}</button>
           <button class="link-danger" data-delete="${esc(v.id)}" data-name="${esc(v.name)}">${esc(t("del"))}</button></td></tr>`;
   });
-  if (!g.error && ov?.gallery) $("gallery-sum").textContent = t("gallery_sum", { n: g.videos.length, used: mb(ov.gallery.used_bytes), limit: mb(ov.gallery.limit_bytes) });
+  $("gallery-sum").textContent = g.error ? t("supa_down", { e: g.error })
+    : ov?.gallery ? t("gallery_sum", { n: g.videos.length, used: mb(ov.gallery.used_bytes), limit: mb(ov.gallery.limit_bytes) }) : "";
   $("gallery").innerHTML = table(["", t("h_name"), t("h_size"), t("h_people"), t("h_uploader"), t("h_date"), t("h_opens"), ""], rows);
-}
-
-// ------------------------------------------------------------------ activity (every 5 s)
-const ACTIONS = ["upload", "gallery_open", "analysis_start", "analysis_done", "analysis_loaded", "analysis_saved",
-  "search", "gallery_save", "gallery_save_failed", "analysis_save_failed", "admin_login",
-  "admin_login_failed", "admin_block", "admin_unblock", "admin_delete_video", "admin_cancel_job", "admin_password_changed"];
-async function loadActivity() {
-  const q = new URLSearchParams({ ip: $("act-ip").value.trim(), action: $("act-action").value, source: $("act-source").value, limit: "300" });
-  let res;
-  try { res = await api("GET", `/api/admin/activity?${q}`); } catch (e) { if (e.message !== "login") toast("error", e.message); return; }
-  const rows = res.events.map((e) => {
-    const d = e.detail || {};
-    const detail = Object.entries(d).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
-    return `<tr><td class="num">${esc(clock(e.ts))}</td><td class="mono">${esc(e.ip)}</td><td>${esc(e.action)}</td>
-      <td class="mono">${esc(e.video_id || "")}</td><td class="wrap">${esc(detail)}</td></tr>`;
-  });
-  $("activity").innerHTML = table([t("h_ts"), t("h_ip"), t("h_action"), t("h_video"), t("h_detail")], rows);
 }
 
 // ------------------------------------------------------------------ actions
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("button");
-  if (!b) return;
+  if (!b || !(b.dataset.cancel || b.dataset.block || b.dataset.unblock || b.dataset.delete || b.dataset.reanalyse)) return;
   try {
     if (b.dataset.cancel) {
+      if (!confirm(t("confirm_cancel", { n: b.dataset.name || "" }))) return;
       await api("POST", `/api/admin/jobs/${b.dataset.cancel}/cancel`);
-      refresh();
     } else if (b.dataset.block) {
       if (!confirm(t("confirm_block", { ip: b.dataset.block }))) return;
       await api("POST", "/api/admin/block", { ip: b.dataset.block, reason: "" });
-      refresh();
     } else if (b.dataset.unblock) {
       await api("DELETE", `/api/admin/block/${encodeURIComponent(b.dataset.unblock)}`);
-      refresh();
     } else if (b.dataset.delete) {
       if (!confirm(t("confirm_del", { n: b.dataset.name }))) return;
       await api("DELETE", `/api/admin/gallery/${b.dataset.delete}`);
@@ -225,8 +273,8 @@ document.addEventListener("click", async (e) => {
       b.disabled = true;
       await api("POST", `/api/admin/gallery/${b.dataset.reanalyse}/reanalyse`);
       toast("success", t("done"));
-      refresh();
-    } else return;
+    }
+    refresh();
   } catch (err) {
     if (err.message !== "login") toast("error", `${t("err")}: ${err.message}`);
   } finally {
@@ -253,32 +301,26 @@ $("pw-form").addEventListener("submit", async (e) => {
   } catch (err) { if (err.message !== "login") toast("error", err.message); }
 });
 
-// tabs: one view at a time, so nothing needs a long page scroll
 document.querySelectorAll("#tabs [data-tab]").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll("#tabs [data-tab]").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
   document.querySelectorAll(".adm-view").forEach((v) => { v.hidden = v.dataset.view !== b.dataset.tab; });
   if (b.dataset.tab === "gallery") loadGallery();
-  if (b.dataset.tab === "activity") loadActivity();
 }));
-
-$("act-form").addEventListener("input", () => loadActivity());
-$("act-form").addEventListener("submit", (e) => e.preventDefault());
-$("act-action").insertAdjacentHTML("beforeend", ACTIONS.map((a) => `<option value="${a}">${a}</option>`).join(""));
 
 $("lang-btn").addEventListener("click", () => {
   lang = lang === "vi" ? "en" : "vi";
   try { localStorage.setItem("ps.lang", lang); } catch (e) {}
   applyLang();
-  refresh(); loadGallery(); loadActivity();
+  refresh();
+  loadGallery();
 });
 
 $("logout").addEventListener("click", async () => { await api("POST", "/api/admin/logout").catch(() => {}); showLogin(); });
 
 // ------------------------------------------------------------------ login and start
-let timers = [];
+let timer = null;
 function showLogin() {
-  timers.forEach(clearInterval);
-  timers = [];
+  clearInterval(timer);
   $("dash").hidden = true;
   $("login").hidden = false;
   $("login-pw").focus();
@@ -288,8 +330,8 @@ function showDash() {
   $("login").hidden = true;
   $("dash").hidden = false;
   refresh().then(loadGallery);
-  loadActivity();
-  timers = [setInterval(refresh, 3000), setInterval(() => { if ($("act-source").value === "memory") loadActivity(); }, 5000)];
+  clearInterval(timer);
+  timer = setInterval(refresh, REFRESH_MS);
 }
 
 $("login-form").addEventListener("submit", async (e) => {

@@ -42,22 +42,33 @@
     <nav class="adm-tabs" id="tabs" role="tablist">
       <button role="tab" data-tab="overview" aria-selected="true" data-t="tab_overview">Tổng quan</button>
       <button role="tab" data-tab="gallery" data-t="tab_gallery">Thư viện</button>
-      <button role="tab" data-tab="activity" data-t="tab_activity">Nhật ký</button>
       <button role="tab" data-tab="security" data-t="tab_security">Bảo mật</button>
     </nav>
 
-    <!-- overview: system, jobs, people online -->
+    <!-- overview: analyses only, live -->
     <section class="adm-view" data-view="overview">
       <div class="adm-stats" id="stats"></div>
       <div class="adm-split">
-        <section class="card adm-fill">
-          <h2 data-t="jobs">Job và hàng đợi</h2>
-          <div class="adm-table-wrap"><table class="adm-table" id="jobs"></table></div>
-        </section>
-        <section class="card adm-fill">
-          <h2 data-t="online">Đang online (5 phút)</h2>
-          <div class="adm-table-wrap"><table class="adm-table" id="online"></table></div>
-        </section>
+        <div class="adm-col">
+          <section class="card">
+            <h2><span data-t="now">Đang phân tích</span> <span class="live" data-t="live">trực tiếp</span></h2>
+            <div id="now"></div>
+          </section>
+          <section class="card adm-fill">
+            <h2 data-t="queue">Hàng đợi</h2>
+            <div class="adm-list" id="queue"></div>
+          </section>
+        </div>
+        <div class="adm-col">
+          <section class="card adm-fill">
+            <h2 data-t="recent">Đã phân tích gần đây</h2>
+            <div class="adm-list" id="recent"></div>
+          </section>
+          <section class="card adm-fill">
+            <h2 data-t="online">Đang online</h2>
+            <div class="adm-list" id="online"></div>
+          </section>
+        </div>
       </div>
     </section>
 
@@ -66,24 +77,6 @@
       <section class="card adm-fill">
         <h2><span data-t="gallery">Thư viện (Supabase)</span> <span class="muted small" id="gallery-sum"></span></h2>
         <div class="adm-table-wrap"><table class="adm-table" id="gallery"></table></div>
-      </section>
-    </section>
-
-    <!-- activity -->
-    <section class="adm-view" data-view="activity" hidden>
-      <section class="card adm-fill">
-        <h2 data-t="activity">Nhật ký hoạt động</h2>
-        <form class="adm-inline" id="act-form">
-          <input class="adm-input" id="act-ip" data-tp="ip_filter" placeholder="Lọc theo IP">
-          <select class="adm-input" id="act-action">
-            <option value="" data-t="all_actions">Mọi sự kiện</option>
-          </select>
-          <select class="adm-input" id="act-source">
-            <option value="memory" data-t="src_memory">Từ lúc server chạy</option>
-            <option value="db" data-t="src_db">Lịch sử (Supabase, 30 ngày)</option>
-          </select>
-        </form>
-        <div class="adm-table-wrap"><table class="adm-table" id="activity"></table></div>
       </section>
     </section>
 

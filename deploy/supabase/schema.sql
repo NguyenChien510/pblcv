@@ -31,6 +31,7 @@ create table if not exists public.analyses (
 );
 create index if not exists analyses_video_idx on public.analyses (video_id);
 
+-- no longer written since the admin page shows analyses live (2026-11-28); kept so existing projects need no change
 create table if not exists public.activity_log (
   id        bigint generated always as identity primary key,
   ts        timestamptz not null default now(),

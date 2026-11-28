@@ -10,7 +10,6 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -126,12 +125,7 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
     gallery = Gallery(db, int(cfg.storage_limit_mb * 2**20)) if db else None
     monitor = Monitor(db, cfg.uploads_per_hour)
 
-    @asynccontextmanager
-    async def lifespan(_app):
-        yield
-        monitor.flush()            # events still waiting for the 5 s batch
-
-    app = FastAPI(title="SpaceTime-DSCA Person Search", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
+    app = FastAPI(title="SpaceTime-DSCA Person Search", docs_url="/api/docs", redoc_url=None)
     admin = AdminAuth(cfg.admin_session_secret, cfg.admin_password_hash, db)
     jobs = JobManager()            # CPU work, one at a time (shared model and detector)
     net_jobs = JobManager()        # Supabase transfers, so a download never waits behind a 10-minute analysis
@@ -164,8 +158,8 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
         if path.startswith("/static/"):
             # Local demo: always revalidate UI files (cheap 304s) so edits show up without a hard reload
             response.headers["Cache-Control"] = "no-cache"
-        elif not path.startswith("/api/admin"):
-            monitor.request(ip, path, response.status_code, request.headers.get("user-agent", ""))
+        elif not path.startswith(("/api/admin", "/admin")):       # the admin is not one of the users
+            monitor.request(ip, request.method, path, request.headers.get("user-agent", ""))
         return response
 
     # ------------------------------------------------------------------ helpers
@@ -334,6 +328,7 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
                 analysis_keys[key] = aid
                 analysis_meta[aid] = {"from_gallery": False}
                 evict()
+            job.meta["tracks"] = len(a.tracks)          # shown on the admin page
             monitor.event(ip, "analysis_done", v.id, name=v.name, tracks=len(a.tracks), seconds=round(time.time() - t0))
             save_analysis_to_gallery(v, a)
             return {"analysis_id": aid, "from_gallery": False}
@@ -572,17 +567,6 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
             "limits": {"max_queue": cfg.max_queue, "uploads_per_hour": cfg.uploads_per_hour},
             "in_memory": {"videos": len(videos), "analyses": len(analyses)},
         }
-
-    @app.get("/api/admin/activity")
-    def admin_activity(request: Request, ip: str = "", action: str = "", source: str = "memory", limit: int = 200):
-        require_admin(request)
-        limit = max(1, min(limit, 1000))
-        if source == "db":
-            try:
-                return {"events": monitor.history(ip, action, limit)}
-            except Exception as e:
-                raise HTTPException(502, f"Supabase: {e}")
-        return {"events": monitor.recent(ip, action, limit)}
 
     @app.post("/api/admin/jobs/{job_id}/cancel")
     def admin_cancel(job_id: str, request: Request):
