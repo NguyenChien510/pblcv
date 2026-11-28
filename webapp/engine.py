@@ -116,6 +116,19 @@ CONSTRAINT_WEIGHTS = {"gender": 0.0, "top_color": 0.0, "bottom_color": 0.06, "ba
                       "hat": 0.05, "longsleeves": 0.03, "longpants": 0.03, "longhair": 0.05, "suitcase": 0.15,
                       "shorts": 0.05, "skirt": 0.05, "longcoat": 0.03}
 LOOSE_COLOR_WEIGHT = 0.0    # "a man in red" (color without a garment) -> top_color; no ranking weight (see above)
+# "Matching attributes only" filter (2026-11-28). It used to hide anyone with p < 0.5 on ANY constraint and kept the
+# right person in only 25/70 labelled real-footage queries (top-1 49 -> 19/70, 6% of people left): the attribute
+# models rank people well but their scores are not probabilities on small, distant people (the right person with a
+# backpack scored a median 0.42, yet above 82% of the video), gender and top colour are unreliable (weight 0 above),
+# and hat ranked at chance (all 8 people with caps failed). Now: constraints measured from the track itself plus the
+# reliable attributes keep the absolute 0.5 cut (the right person failed 0-9% of the time, suitcase 1/5); the other
+# weighted ones only drop people in the bottom FILTER_REL_PCT % of this video on that constraint; gender, top colour
+# and hat are not filtered on. Same 70 queries: right person kept 66/70, top-1 50/70, 58% of people left.
+FILTER_ABS_KEYS = {"act_walk", "act_run", "act_stand", "act_sit", "act_left", "act_right", "act_toward", "act_away",
+                   "suitcase", "longpants", "longsleeves", "longhair"}
+FILTER_SKIP_KEYS = {"gender", "top_color", "hat"}
+FILTER_REL_PCT = 25
+FILTER_REL_MIN_TRACKS = 5      # fewer people with a score than this: no relative cut
 ATTR_PATTERNS = {           # key -> (regex meaning "yes" or None, regex meaning "no" or None)
     "backpack": (r"\b(backpacks?|rucksacks?)\b", None),
     "bag": (r"\b(bags?|handbags?|purses?|totes?)\b", None),
@@ -593,6 +606,26 @@ def constraint_p(track: "Track", c: Dict[str, Any]) -> Optional[float]:
     if p is None and key == "shorts" and "longpants" in track.attrs:   # without the PA-100K model
         p = 1.0 - track.attrs["longpants"]
     return None if p is None else (p if val else 1.0 - p)
+
+
+def attr_filter_cuts(constraints: List[Dict[str, Any]], all_p: List[Dict[str, Optional[float]]]) -> Dict[str, float]:
+    """
+    Per constraint key, the score below which the attribute filter hides a person (see FILTER_ABS_KEYS): 0.5 for
+    constraints measured from the track and the reliable attributes, the FILTER_REL_PCT percentile of this video's
+    scores for the other weighted ones; gender, top colour and hat are left out.
+    """
+    cuts: Dict[str, float] = {}
+    for c in constraints:
+        k = c["key"]
+        if k in FILTER_SKIP_KEYS or c["weight"] <= 0:
+            continue
+        if k in FILTER_ABS_KEYS:
+            cuts[k] = 0.5
+            continue
+        vals = [p[k] for p in all_p if p.get(k) is not None]
+        if len(vals) >= FILTER_REL_MIN_TRACKS:
+            cuts[k] = float(np.percentile(vals, FILTER_REL_PCT))
+    return cuts
 
 
 def par_attrs(p: np.ndarray, old: Dict[str, Any]) -> Dict[str, float]:
@@ -1619,8 +1652,11 @@ class SearchEngine:
             z = (raw - raw.mean()) / raw.std().clamp_min(1e-6) if len(raw) > 1 else raw * 0
             clip_raw, clip_norm = raw.tolist(), (j.mean() + j.std().nan_to_num(0.0) * z).tolist()
         result["scores"] = []
+        all_p = {tid: {c["key"]: constraint_p(analysis.tracks[tid], c) for c in result["constraints"]}
+                 for tid in analysis.track_order}
+        cuts = attr_filter_cuts(result["constraints"], list(all_p.values()))
         for i, tid in enumerate(analysis.track_order):
-            attr_p = {c["key"]: constraint_p(analysis.tracks[tid], c) for c in result["constraints"]}
+            attr_p = all_p[tid]
             known = [(c["weight"], attr_p[c["key"]]) for c in result["constraints"] if attr_p[c["key"]] is not None]
             result["scores"].append({
                 "track_id": tid, "joint": round(sim_joint[i], 5), "app": round(sim_app[i], 5),
@@ -1628,7 +1664,8 @@ class SearchEngine:
                 **({"clip": round(clip_norm[i], 5), "clip_raw": round(clip_raw[i], 5)} if clip_norm else {}),
                 "attr_p": {k: (None if v is None else round(v, 4)) for k, v in attr_p.items()},
                 "penalty": round(sum(w * (1.0 - p) for w, p in known), 5),      # subtracted from the fused score
-                "attr_min": round(min(p for _, p in known), 4) if known else None,  # used by the attribute filter
+                "attr_min": round(min(p for _, p in known), 4) if known else None,
+                "attr_fail": [k for k, cut in cuts.items() if attr_p[k] is not None and attr_p[k] < cut],  # filter
             })
         return result
 
@@ -1645,7 +1682,7 @@ class SearchEngine:
         wsum = sum(max(0.0, float(weights.get(k, 0.0))) for k in keys) or 1.0
         w = {k: max(0.0, float(weights.get(k, 0.0))) / wsum for k in keys}
         if attr_filter:
-            scores = [s for s in scores if s.get("attr_min") is None or s["attr_min"] >= 0.5]
+            scores = [s for s in scores if not s.get("attr_fail")]
         ranked = [dict(s, fused=(sum(w[k] * s[k] for k in w) + cw * (s.get("clip") or 0.0)) / (1.0 + cw)
                        - s.get("penalty", 0.0)) for s in scores]
         ranked.sort(key=lambda s: s["fused"], reverse=True)

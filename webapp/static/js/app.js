@@ -79,7 +79,8 @@ function rerank() {
   if (!S.search?.scores?.length) { S.ranked = []; refresh(); return; }
   const w = normWeights();
   let scores = S.search.scores;
-  if (S.attrFilter && S.search.constraints?.length) scores = scores.filter((s) => s.attr_min == null || s.attr_min >= 0.5);
+  // the server decides who fails (engine.attr_filter_cuts); mirrored in SearchEngine.rank
+  if (S.attrFilter && S.search.constraints?.length) scores = scores.filter((s) => !s.attr_fail?.length);
   if (!scores.length) { S.ranked = []; refresh(); return; }
   const cw = scores[0].clip != null ? S.status?.clip_weight ?? 0 : 0;   // absent when CLIP is not loaded
   const ranked = scores.map((s) => ({
