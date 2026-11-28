@@ -1717,7 +1717,8 @@ class SearchEngine:
                 "start": t.start,
                 "end": t.end,
                 "n_det": len(t.det_frames),
-                "attrs": {k: (v if isinstance(v, dict) else round(v, 3)) for k, v in t.attrs.items()},
+                # numbers rounded; colour dicts and lists (dir_slopes) passed through
+                "attrs": {k: (round(v, 3) if isinstance(v, (int, float)) else v) for k, v in t.attrs.items()},
                 "boxes": [[f, *t.boxes[f]] for f in frames],
                 "thumb": _data_url(t.thumb) if t.thumb else "",
                 "film": [_data_url(j) for j in t.film],
