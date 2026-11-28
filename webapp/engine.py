@@ -26,6 +26,8 @@ import torch.nn.functional as F
 from data.text_decomposer import TextDecomposer
 from models.damr_main import DAMRModel
 
+from . import vi_query
+
 ProgressCb = Callable[[str, float, float], None]
 
 DEFAULT_WEIGHTS = {"joint": 0.45, "app": 0.45, "mot": 0.09}   # the three DSCA branches; the UI tunes only these
@@ -1575,32 +1577,37 @@ class SearchEngine:
     def search(self, analysis: Analysis, prompt: str) -> Dict[str, Any]:
         """Three cosine scores per track; ranking/fusion happens in the client."""
         prompt = prompt.strip()
-        concepts = self.decomposer.extract_concepts(prompt)       # keywords shown in the UI
-        concepts["q_app"], concepts["q_mot"] = self.decomposer.decompose(prompt)   # follows the checkpoint's dsca_mode
+        # Vietnamese -> the English every model and word list below expects (vi_query); English is left unchanged
+        text, lang, unknown = vi_query.translate(prompt)
+        concepts = self.decomposer.extract_concepts(text)       # keywords shown in the UI
+        concepts["q_app"], concepts["q_mot"] = self.decomposer.decompose(text)   # follows the checkpoint's dsca_mode
         if analysis.tracks and analysis.ckpt_key != self.ckpt_key:
             self.encode_tracks(analysis)
 
         result = {
             "prompt": prompt,
+            "prompt_en": text,
+            "prompt_lang": lang,
+            "unknown_words": unknown,
             "q_app": concepts["q_app"],
             "q_mot": concepts["q_mot"],
             "app_keywords": concepts["app_keywords"],
             "mot_keywords": concepts["mot_keywords"],
-            "constraints": query_attributes(prompt, with_attrs=self.attr_model is not None or self.par_model is not None),
+            "constraints": query_attributes(text, with_attrs=self.attr_model is not None or self.par_model is not None),
             "scores": [],
         }
         if not analysis.tracks:
             return result
 
         with self.model_lock, torch.no_grad():
-            t = self.model.encode_text([prompt, concepts["q_app"], concepts["q_mot"]], device=self.device)
+            t = self.model.encode_text([text, concepts["q_app"], concepts["q_mot"]], device=self.device)
         t = F.normalize(t.float().cpu(), dim=-1)
         sim_joint = (analysis.emb["V_video"] @ t[0]).tolist()
         sim_app = (analysis.emb["V_app"] @ t[1]).tolist()
         sim_mot = (analysis.emb["V_mot"] @ t[2]).tolist()
         clip_raw = clip_norm = None
         if self.clip_model is not None and "CLIP" in analysis.emb:
-            tok = self.clip_processor(text=[CLIP_PREFIX + prompt], return_tensors="pt", padding=True,
+            tok = self.clip_processor(text=[CLIP_PREFIX + text], return_tensors="pt", padding=True,
                                       truncation=True, max_length=77)
             with self.model_lock, torch.inference_mode():
                 ct = F.normalize(self.clip_model.get_text_features(**{k: v.to(self.device) for k, v in tok.items()})

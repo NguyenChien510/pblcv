@@ -14,6 +14,7 @@ TEXT = {
     "vi": {
         "title": "Báo cáo tìm kiếm người trong video",
         "query": "Câu mô tả",
+        "query_en": "Câu tiếng Anh đã tìm",
         "q_app": "Q_app (ngoại hình)",
         "q_mot": "Q_mot (chuyển động)",
         "video": "Video",
@@ -33,6 +34,7 @@ TEXT = {
     "en": {
         "title": "Video person search report",
         "query": "Query",
+        "query_en": "Searched as (English)",
         "q_app": "Q_app (appearance)",
         "q_mot": "Q_mot (motion)",
         "video": "Video",
@@ -86,6 +88,7 @@ def build_report(analysis: Analysis, search: Dict[str, Any], ranked: List[Dict[s
 
     meta = {
         "query": search["prompt"],
+        "query_en": search.get("prompt_en", search["prompt"]),
         "q_app": search["q_app"],
         "q_mot": search["q_mot"],
         "video": video_name,
@@ -168,6 +171,7 @@ border-radius:14px;padding:14px}}
 <h1>{e(tx['title'])}</h1>
 <div class="meta">
   <div><span>{tx['query']}</span>{e(meta['query'])}</div>
+  {f"<div><span>{tx['query_en']}</span>{e(meta['query_en'])}</div>" if meta['query_en'] != meta['query'] else ""}
   <div><span>{tx['q_app']}</span>{e(meta['q_app'])}</div>
   <div><span>{tx['q_mot']}</span>{e(meta['q_mot'])}</div>
   <div><span>{tx['video']}</span>{e(meta['video'])}</div>

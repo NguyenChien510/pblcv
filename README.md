@@ -253,6 +253,15 @@ Tải video ─► Proxy H.264 720p ─► [Phân tích, 1 lần] ─► chỉ m
 
 Bước ⑤ chạy trước ⑥ và ⑦, nên mỗi người chỉ được mã hóa một lần.
 
+**Nhập tiếng Việt:** có thể gõ mô tả bằng tiếng Việt, có dấu hoặc không dấu. Các model chỉ hiểu tiếng Anh, nên `webapp/vi_query.py` chuyển câu sang tiếng Anh bằng một từ điển mô tả người (quần áo, màu, phụ kiện, hành động, hướng đi), rồi đảo trật tự cho đúng tiếng Anh. Ví dụ, "người đàn ông mặc áo khoác xanh đậm, kéo vali, đi sang trái" thành "a man wearing a dark blue jacket, pulling a suitcase, walking to the left". Giao diện hiện dòng **EN** cho biết câu được hiểu thế nào, kèm các từ không hiểu. Kết quả trên 70 câu tự gán nhãn viết lại bằng tiếng Việt (số câu đúng ở hạng 1):
+
+| Cách nhập | Đúng hạng 1 |
+| :--- | :--- |
+| Tiếng Việt qua từ điển, có dấu hoặc không dấu | 52/70 |
+| Câu tiếng Anh gốc | 49/70 |
+| Dịch bằng model Helsinki-NLP opus-mt (có dấu / không dấu) | 37/70 / 6/70 |
+| Tiếng Việt không dịch | 1/70 |
+
 **Tìm kiếm:** câu truy vấn được tách bằng DSCA và mã hóa bằng BERT, rồi tính điểm cuối:
 $$\text{điểm} = \frac{0{,}45\cos(T_{full},V_{video}) + 0{,}45\cos(T_{app},V_{app}) + 0{,}09\cos(T_{mot},V_{mot}) + 0{,}2\,\text{CLIP}}{1{,}2} - \text{phạt thuộc tính}$$
 - Ba trọng số DSCA được chuẩn hoá để cộng lại bằng 1.

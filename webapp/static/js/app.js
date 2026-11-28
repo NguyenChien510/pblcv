@@ -375,6 +375,13 @@ function renderDsca() {
   const s = S.search;
   $("dsca").hidden = !s;
   if (!s) return;
+  const vi = s.prompt_lang === "vi";       // Vietnamese input: show the English that was actually searched
+  $("en-row").hidden = !vi;
+  if (vi) {
+    const unk = s.unknown_words || [];
+    $("q-en").innerHTML = esc(s.prompt_en || "—") +
+      (unk.length ? `<span class="unk">${esc(t("unknown_words", { w: unk.join(", ") }))}</span>` : "");
+  }
   $("q-app").innerHTML = markKeywords(s.q_app, s.app_keywords);
   $("q-mot").innerHTML = markKeywords(s.q_mot, s.mot_keywords);
   const cs = s.constraints || [];

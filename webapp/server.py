@@ -326,14 +326,16 @@ def create_app(engine: SearchEngine, uploads_dir: Path, samples_dir: Path, max_u
         weights = resolve_weights(body.weights)
 
         def run(job):
-            ranked = engine.rank(engine.search(a, body.prompt)["scores"], weights, body.filter_attrs)
+            res = engine.search(a, body.prompt)
+            ranked = engine.rank(res["scores"], weights, body.filter_attrs)
             if not ranked:
                 raise ValueError("No persons to render")
             tag = hashlib.sha1(f"{body.prompt}|{weights}|{body.top_k}|{engine.ckpt_key}".encode()).hexdigest()[:10]
             out = v.folder / f"render_{a.id}_{tag}.mp4"
             if not out.exists():
                 raw = v.folder / f"render_{tag}.raw.mp4"
-                engine.render(v.proxy, a, ranked, body.prompt, body.top_k, raw, job.progress)
+                # the English form: cv2's Hershey font cannot draw Vietnamese diacritics
+                engine.render(v.proxy, a, ranked, res["prompt_en"], body.top_k, raw, job.progress)
                 video_io.to_h264(raw, out, a.frames_processed / a.fps,
                                  lambda f: job.progress("encode_h264", f * 100, 100))
             return {"url": f"/api/videos/{v.id}/renders/{out.name}", "filename": f"{Path(v.name).stem}_tracked.mp4"}

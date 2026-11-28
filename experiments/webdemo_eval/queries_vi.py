@@ -1,0 +1,177 @@
+"""
+Vietnamese versions of the labelled queries in queries.py (same order, same track ids), written 2026-11-28 before
+webapp/vi_query.py existed, the way a Vietnamese user would type them: varied words for the same thing (áo thun /
+áo phông, quần đùi / quần short, ba lô / balo, váy / đầm), nouns before their colours, often no verb.
+`unaccented()` gives the same sentences without diacritics (many users type that way).
+Split for choosing vs reporting: even positions of the 70 (GT9 + GT15 + EXT46, in that order) are the dev half,
+odd positions the test half.
+"""
+import unicodedata
+
+GT_VI = {
+ "TESTVIDEO": [
+  "người đàn ông mặc áo thun đen, quần short kẻ caro, đội mũ lưỡi trai",
+  "anh mặc áo phông trắng quần đùi đen, đeo ba lô đen",
+  "người đeo balo màu trắng hồng",
+  "nam mặc áo sơ mi xanh nhạt, quần tối màu",
+  "phụ nữ mặc áo xanh dương đeo ba lô đen",
+  "người đàn ông mặc toàn đồ đen đang đi bộ",
+  "người đàn ông cầm áo sơ mi caro, đeo ba lô, mặc quần short đen, đội mũ",
+  "người mặc áo xanh lá, đeo ba lô xám",
+  "chị mặc quần kaki và áo xanh đậm",
+ ],
+ "ok": [
+  "người đàn ông mặc áo phản quang màu cam",
+  "người phụ nữ mặc đầm đen hoa đỏ, cầm túi hồng",
+  "cô gái mặc áo croptop xanh navy và quần short xanh nhạt",
+  "người đàn ông áo trắng, đeo ba lô đen, quần đùi nâu, đội mũ lưỡi trai",
+  "người mặc áo cam và quần short vàng",
+  "phụ nữ áo đen quần đỏ",
+  "người đàn ông mặc áo tím",
+  "anh mặc áo xanh dương, đeo ba lô, quần short xám, đeo tai nghe",
+  "người phụ nữ xách túi in cờ Anh, mặc quần đỏ",
+  "người tóc hồng đeo ba lô đỏ",
+  "nam mặc áo phông đỏ, quần đùi đen, đi tất đỏ",
+  "người phụ nữ mặc váy kẻ sọc, cầm túi đỏ, đội mũ rộng vành",
+  "người đàn ông mặc áo sơ mi caro và quần kaki",
+  "người đàn ông áo xanh ngọc đeo balo đen",
+  "người đàn ông mặc áo polo trắng, quần short túi hộp màu be, đeo ba lô",
+ ]}
+
+EXT_VI = [
+ "phụ nữ đeo ba lô trắng, mặc áo hồng",
+ "người đàn ông mặc áo kẻ ô và quần short đen",
+ "bà lớn tuổi tóc bạc, đeo túi đeo vai màu be, mặc quần lửng xám",
+ "người phụ nữ mặc áo sát nách họa tiết hoa, quần lửng đen",
+ "phụ nữ mặc váy yếm xám bên ngoài áo thun trắng",
+ "người phụ nữ áo trắng khoác cardigan tím có họa tiết, quần jean, đeo túi chéo",
+ "phụ nữ tóc vàng mặc áo họa tiết trắng đen, quần bò, xách túi tối màu",
+ "cô gái trẻ mặc quần short jean và áo xanh nhạt",
+ "người đàn ông quàng khăn dài màu nâu có họa tiết, mặc áo đen",
+ "anh mặc áo thun đỏ, đeo kính",
+ "phụ nữ áo xanh dương đeo balo xám",
+ "người phụ nữ mặc áo kiểu hoa, đeo túi đeo vai đen",
+ "phụ nữ đeo ba lô leo núi to màu xanh lá đậm, mặc quần lửng đen",
+ "nam áo phông cam, đeo ba lô đen, quần dài đen",
+ "cô gái mặc áo croptop đen, quần ống rộng kẻ sọc cam trắng",
+ "phụ nữ mặc áo thun sọc trắng, đeo túi đen",
+ "người đàn ông mặc áo phông trắng, quần đùi jean, đeo túi màu be",
+ "người phụ nữ mặc áo trễ vai trắng và quần ống rộng xám",
+ "chị mặc áo ba lỗ đen, quần short jean, đeo balo",
+ "phụ nữ tóc vàng mặc váy maxi dài xanh navy có họa tiết",
+ "người đàn ông mặc áo xanh navy và quần short trắng",
+ "người phụ nữ mặc áo thun xanh dương, quần jean xám, kéo vali đen",
+ "phụ nữ mặc đầm ngắn xanh navy, đi giày đỏ",
+ "người phụ nữ đội mũ rộng vành trắng, áo xám, quần dài trắng",
+ "người đàn ông hói mặc áo tím, đeo ba lô đen",
+ "phụ nữ mặc chân váy hoa vàng trắng",
+ "cô gái trẻ mặc áo nhiều màu, quần short jean, đi bốt nâu, đeo ba lô",
+ "người phụ nữ mặc chân váy jean xanh, xách túi xanh lá",
+ "phụ nữ áo thun đen, quần jean, đeo túi to màu be",
+ "người phụ nữ mặc đầm dài kẻ sọc xám",
+ "phụ nữ mặc váy xám nhạt, có vali",
+ "cô gái mặc áo ba lỗ trắng, quần jean, kéo va li xanh dương",
+ "người đàn ông áo sơ mi xanh nhạt, xách túi nilon trắng",
+ "người đàn ông áo thun đen kéo hai vali",
+ "bà cụ tóc bạc trắng kéo vali xanh",
+ "phụ nữ đeo ba lô cam, mặc váy xanh dương",
+ "nam mặc áo thun hồng, quần đùi vàng",
+ "chàng trai trẻ mặc áo phông đen, quần short đen, đeo balo đen",
+ # direction
+ "người đàn ông hói mặc áo sơ mi caro đỏ đô, đi sang phải",
+ "người phụ nữ tóc xoăn màu hung, mặc áo khoác trắng, đi về bên phải",
+ "phụ nữ áo thun đen đeo túi to màu be đang đi sang trái",
+ "bà lớn tuổi đeo túi màu be đi qua trái",
+ "người phụ nữ mặc đầm dài hoa tối màu đi ra xa camera",
+ "cô gái trẻ áo thun đen quần short jean đang đi xa khỏi camera",
+ "phụ nữ mặc áo phông xám, chân váy hoa, đi về phía camera",
+ "ông cụ mặc áo sơ mi trắng đang đi lại gần camera",
+]
+
+
+# Second wording of the same 70 people (same order), written after the glossary existed and not used to tune it:
+# terse "typed quickly" style, other synonyms (áo pull, quần sọt, nón kết, va-li, giỏ xách, "hoạ" tone placement...).
+GT_VI2 = {
+ "TESTVIDEO": [
+  "nam áo pull đen, quần sọt caro, nón kết",
+  "đàn ông áo thun trắng, quần cộc đen, balo đen",
+  "ai đó đeo balô trắng hồng",
+  "anh áo sơmi xanh da trời nhạt quần màu tối",
+  "nữ áo xanh lam, balo đen",
+  "đàn ông đồ đen toàn thân đi bộ",
+  "nam cầm theo áo caro, đeo balô, quần đùi đen, nón",
+  "người áo xanh lục ba lô ghi",
+  "phụ nữ quần khaki áo xanh than",
+ ],
+ "ok": [
+  "nam áo gile phản quang cam",
+  "nữ váy liền đen in hoa đỏ cầm giỏ xách hồng",
+  "cô gái croptop navy, quần soóc xanh nhạt",
+  "nam áo trắng balo đen quần short nâu mũ lưỡi trai",
+  "ai đó áo cam quần đùi vàng",
+  "nữ áo đen quần dài đỏ",
+  "anh mặc áo màu tím",
+  "nam áo xanh biển, balo, quần đùi xám, tai nghe",
+  "cô xách túi có cờ Anh, quần đỏ",
+  "người có tóc hồng, ba lô đỏ",
+  "nam áo thun đỏ quần đùi đen vớ đỏ",
+  "nữ đầm sọc, túi đỏ, nón rộng vành",
+  "đàn ông sơ mi kẻ ô, quần kaki",
+  "nam áo xanh ngọc, ba lô đen",
+  "nam áo polo trắng quần túi hộp màu be, có balo",
+ ]}
+
+EXT_VI2 = [
+ "nữ balo trắng áo hồng",
+ "nam sơ mi caro quần short đen",
+ "bà tóc muối tiêu, túi khoác vai màu kem, quần ngố xám",
+ "nữ áo không tay in hoa, quần lửng đen",
+ "nữ đầm yếm xám, trong là áo phông trắng",
+ "nữ áo trắng, cardigan tím họa tiết, quần bò, túi đeo chéo",
+ "cô tóc vàng áo hoạ tiết đen trắng quần jean xách túi đen",
+ "bạn nữ trẻ quần đùi jean áo xanh nhạt",
+ "nam quàng khăn nâu dài có hoa văn, áo đen",
+ "nam áo phông đỏ đeo mắt kính",
+ "nữ áo xanh dương balo ghi",
+ "nữ áo kiểu in hoa túi đeo vai màu đen",
+ "nữ ba lô du lịch xanh lá đậm to, quần ngố đen",
+ "nam áo thun cam ba lô đen quần tây đen",
+ "nữ áo lửng đen, quần ống rộng sọc cam trắng",
+ "nữ áo phông kẻ trắng, túi đen",
+ "nam áo thun trắng, quần short bò, túi màu be",
+ "nữ áo hở vai trắng quần suông xám",
+ "nữ áo sát nách đen quần đùi jean, ba lô",
+ "cô tóc vàng mặc đầm maxi dài navy hoa văn",
+ "nam áo xanh tím than quần short trắng",
+ "nữ áo thun xanh lam quần jean ghi kéo va-li đen",
+ "nữ đầm ngắn xanh đen, giày đỏ",
+ "nữ nón vành trắng áo xám quần trắng",
+ "đàn ông đầu hói áo tím ba lô đen",
+ "nữ chân váy in hoa vàng trắng",
+ "cô gái trẻ áo sặc sỡ quần short jean bốt nâu balo",
+ "nữ váy jean xanh, giỏ xách xanh lá",
+ "nữ áo phông đen quần bò túi to màu be",
+ "nữ đầm dài sọc xám",
+ "nữ chân váy xám nhạt kéo vali",
+ "cô gái áo ba lỗ trắng quần jean va li xanh dương",
+ "nam sơ mi xanh nhạt xách túi ni lông trắng",
+ "nam áo đen kéo 2 vali",
+ "bà già tóc trắng kéo vali xanh",
+ "nữ ba lô cam váy xanh",
+ "nam áo hồng quần short vàng",
+ "thanh niên áo đen quần đen ba lô đen",
+ # direction
+ "ông hói sơ mi ca rô đỏ mận đi qua phải",
+ "nữ tóc xoăn hung áo khoác trắng đi sang phải",
+ "nữ áo đen túi lớn màu be đi về bên trái",
+ "bà lớn tuổi túi be đi sang trái",
+ "nữ đầm hoa dài màu tối đi xa dần",
+ "cô gái áo đen quần short jean quay lưng đi ra xa",
+ "nữ áo xám chân váy hoa đi tới camera",
+ "ông cụ áo sơ mi trắng tiến về phía máy quay",
+]
+
+def unaccented(text: str) -> str:
+    """The sentence as typed without diacritics (đ -> d)."""
+    nfd = unicodedata.normalize("NFD", text.replace("đ", "d").replace("Đ", "D"))
+    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
