@@ -52,6 +52,13 @@ cd deploy && cp .env.example .env && docker compose up -d --build
 # for SUPABASE_URL, SUPABASE_SECRET_KEY and the /admin password (scrypt hash) and restarts the app; ec2-setup.sh calls it.
 # remote-deploy.sh reloads Caddy after `up` (the Caddyfile is a bind mount). .github/workflows/supabase-keepalive.yml
 # queries Supabase daily (vars.SUPABASE_URL, secret SUPABASE_SECRET_KEY) so the Free project is not paused.
+# Power (INSTALL.md 6I): .github/workflows/ec2-power.yml (workflow_dispatch start|stop|status; secrets AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY of an IAM user limited to this instance, deploy/aws/ec2-power-policy.json, filled in on the host by
+# deploy/aws/print-power-policy.sh; vars EC2_INSTANCE_ID, AWS_REGION); deploy/ec2-power.sh runs it via gh and waits.
+# Idle stop: deploy/autostop (installed by remote-deploy.sh on every deploy and by ec2-setup.sh) is a systemd timer that
+# reads /api/power every minute through `docker compose exec` and runs `shutdown -h now` when the admin pressed
+# "Tắt server" or after AUTOSTOP_IDLE_MIN (deploy/.env, default 30, 0 = off) idle minutes with no job queued/running.
+# The instance's shutdown behaviour must be Stop (the default); `ec2-power.sh status` reports it.
 ```
 
 If there are no captions under the data root, `TVPRDataset` silently builds a dummy index (32 train / 16 val samples). That is fine for a smoke test, but if metrics look meaningless, check this first.
@@ -148,6 +155,7 @@ Data flow: `data/dataset.py` → `models/damr_main.py::DAMRModel` → `loss/crit
     - **gallery:** delete, re-analyse;
     - **security:** blocked IPs, password.
     - The activity log tab and its Supabase `activity_log` writes were removed on request; `Monitor.event` keeps a small in-memory ring for diagnostics only.
+  - **Power.** `/api/power` (public, read by the EC2 idle-stop timer, not counted as a user) reports `idle_s` (since the last non-admin request or job end), `busy`, `autostop_min` (`AUTOSTOP_IDLE_MIN`) and `shutdown_requested`. `POST /api/admin/shutdown` sets the flag and `/api/admin/shutdown/cancel` clears it. The overview shows the auto-stop countdown, a "Tắt server" button and a cancel banner.
   - **Client IP.** uvicorn trusts `X-Forwarded-For` only with `TRUST_PROXY=1`, i.e. behind Caddy, where the app port is reachable only from Caddy.
   - **Public-site guards:**
     - one queued or running analysis per IP;

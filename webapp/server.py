@@ -46,13 +46,14 @@ class ServerConfig:
     storage_limit_mb: float = 950.0    # gallery size on Supabase (Free plan: 1 GB)
     max_queue: int = 5                 # queued + running jobs before new analyses are refused
     uploads_per_hour: int = 10         # per IP
+    autostop_min: int = 0              # EC2: the host stops itself after this many idle minutes (deploy/autostop); 0 = off
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
         e = os.environ.get
         return cls(e("SUPABASE_URL", ""), e("SUPABASE_SECRET_KEY", ""), e("ADMIN_PASSWORD_HASH", ""),
                    e("ADMIN_SESSION_SECRET", ""), float(e("CACHE_MAX_GB", "5")), float(e("STORAGE_LIMIT_MB", "950")),
-                   int(e("MAX_QUEUE", "5")), int(e("UPLOADS_PER_HOUR", "10")))
+                   int(e("MAX_QUEUE", "5")), int(e("UPLOADS_PER_HOUR", "10")), int(e("AUTOSTOP_IDLE_MIN", "0") or 0))
 
 
 class VideoEntry:
@@ -158,7 +159,7 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
         if path.startswith("/static/"):
             # Local demo: always revalidate UI files (cheap 304s) so edits show up without a hard reload
             response.headers["Cache-Control"] = "no-cache"
-        elif not path.startswith(("/api/admin", "/admin")):       # the admin is not one of the users
+        elif not path.startswith(("/api/admin", "/admin", "/api/power")):   # neither the admin nor the idle check is a user
             monitor.request(ip, request.method, path, request.headers.get("user-agent", ""))
         return response
 
@@ -337,6 +338,16 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
                                                              "reanalyse": params.reanalyse})
         monitor.event(ip, "analysis_start", v.id, name=v.name, reanalyse=params.reanalyse)
         return {"analysis_id": None, "cached": False, "job_id": job.id}
+
+    power = {"shutdown_at": 0.0}       # set by the admin's "Tắt server"; deploy/autostop/pblcv-autostop.sh reads it
+
+    def power_state() -> Dict[str, Any]:
+        """For the EC2 idle stop (deploy/autostop): how long nobody has used the app, and whether a job is running."""
+        all_jobs = jobs.list() + net_jobs.list()
+        busy = any(j.state in ("queued", "running") for j in all_jobs)
+        last = max([monitor.last_activity()] + [j.finished for j in all_jobs if j.finished])
+        return {"idle_s": 0 if busy else round(time.time() - last), "busy": busy, "autostop_min": cfg.autostop_min,
+                "shutdown_requested": power["shutdown_at"] > 0}
 
     def require_admin(request: Request) -> None:
         if not admin.valid(request.cookies.get(COOKIE)):
@@ -566,7 +577,22 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
             "cache_bytes": cache.size() if gallery is not None else None,
             "limits": {"max_queue": cfg.max_queue, "uploads_per_hour": cfg.uploads_per_hour},
             "in_memory": {"videos": len(videos), "analyses": len(analyses)},
+            "power": power_state(),
         }
+
+    @app.post("/api/admin/shutdown")
+    def admin_shutdown(request: Request):
+        """Asks the EC2 host to stop itself; deploy/autostop/pblcv-autostop.sh sees it within a minute."""
+        require_admin(request)
+        power["shutdown_at"] = time.time()
+        monitor.event(client_ip(request), "admin_shutdown")
+        return power_state()
+
+    @app.post("/api/admin/shutdown/cancel")
+    def admin_shutdown_cancel(request: Request):
+        require_admin(request)
+        power["shutdown_at"] = 0.0
+        return power_state()
 
     @app.post("/api/admin/jobs/{job_id}/cancel")
     def admin_cancel(job_id: str, request: Request):
@@ -658,6 +684,11 @@ def create_app(engine: SearchEngine, uploads_dir: Path, max_upload_mb: int = 102
             raise HTTPException(409, str(e))
         monitor.event(client_ip(request), "admin_password_changed")
         return {"ok": True}
+
+    @app.get("/api/power")
+    def power_info():
+        """Read by deploy/autostop/pblcv-autostop.sh on the EC2 host every minute (not counted as user activity)."""
+        return power_state()
 
     # ------------------------------------------------------------------ UI
     @app.get("/", include_in_schema=False)

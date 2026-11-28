@@ -10,6 +10,9 @@ git fetch --quiet --depth 1 origin "$REF"
 git reset --quiet --hard FETCH_HEAD            # compose file and Caddyfile follow the deployed commit
 cd deploy
 touch .env
+grep -q '^AUTOSTOP_IDLE_MIN=' .env || echo 'AUTOSTOP_IDLE_MIN=30' >> .env     # idle stop, minutes (0 = off)
+# EC2 idle stop (deploy/autostop): installed/updated on every deploy so the running host gets changes too
+sudo bash "$HOME/pblcv/deploy/autostop/install.sh" "$HOME/pblcv" || echo "warning: idle stop not installed"
 
 prev=$(grep -E '^APP_IMAGE=' .env | cut -d= -f2- || true)
 set_image() { sed -i '/^APP_IMAGE=/d' .env; echo "APP_IMAGE=$1" >> .env; }

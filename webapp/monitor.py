@@ -47,6 +47,11 @@ class Monitor:
         with self.lock:
             self.events.append({"ts": time.time(), "ip": ip, "action": action, "video_id": video_id, "detail": detail})
 
+    def last_activity(self) -> float:
+        """Time of the last request from any user (the admin page and /api/power are not counted)."""
+        with self.lock:
+            return max([self.started] + [s["last_seen"] for s in self.seen.values()])
+
     def online(self) -> List[Dict[str, Any]]:
         now = time.time()
         with self.lock:

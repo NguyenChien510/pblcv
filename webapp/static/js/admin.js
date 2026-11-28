@@ -29,6 +29,10 @@ const T = {
     confirm_del: "Xoá video \"{n}\" khỏi thư viện? Không khôi phục được.", confirm_block: "Chặn IP {ip}? Việc phân tích của IP này sẽ bị huỷ.",
     confirm_cancel: "Huỷ việc phân tích \"{n}\"?", pw_mismatch: "Hai mật khẩu mới không giống nhau", pw_ok: "Đã đổi mật khẩu",
     done: "Xong", err: "Lỗi",
+    shutdown: "Tắt server", shutdown_pending: "Máy sẽ tắt trong vòng 1 phút. Bật lại bằng GitHub → Actions → EC2 power → start.",
+    confirm_shutdown: "Tắt máy EC2 ngay bây giờ? Mọi người đang dùng sẽ mất kết nối. Bật lại bằng GitHub → Actions → EC2 power → start.",
+    confirm_shutdown_busy: "Đang có video được phân tích hoặc chờ, việc đó sẽ bị dừng. Vẫn tắt máy?",
+    s_autostop: "Tự tắt", as_off: "không bật", as_busy: "đang có việc", as_left: "còn {d}", as_after: "sau {n} phút rảnh", as_now: "đang tắt…",
   },
   en: {
     title: "Admin", login_hint: "Enter the admin password to see the system.", login: "Log in", back: "← Back to search",
@@ -54,6 +58,10 @@ const T = {
     confirm_del: "Delete \"{n}\" from the gallery? This cannot be undone.", confirm_block: "Block IP {ip}? Its analyses will be cancelled.",
     confirm_cancel: "Cancel the analysis of \"{n}\"?", pw_mismatch: "The two new passwords differ", pw_ok: "Password changed",
     done: "Done", err: "Error",
+    shutdown: "Stop server", shutdown_pending: "The machine stops within a minute. Start it again with GitHub → Actions → EC2 power → start.",
+    confirm_shutdown: "Stop the EC2 machine now? Everyone using it loses the connection. Start it again with GitHub → Actions → EC2 power → start.",
+    confirm_shutdown_busy: "A video is being analysed or waiting; it will be stopped. Stop the machine anyway?",
+    s_autostop: "Auto stop", as_off: "off", as_busy: "busy", as_left: "{d} left", as_after: "after {n} idle min", as_now: "stopping…",
   },
 };
 let lang = (() => { try { return localStorage.getItem("ps.lang") || "vi"; } catch (e) { return "vi"; } })();
@@ -142,6 +150,15 @@ function renderStats(analyses) {
     parts.push(g.error ? `<div class="adm-stat bad"><span>${esc(t("s_gallery"))}</span><small>${esc(t("supa_down", { e: g.error.slice(0, 60) }))}</small></div>`
       : stat(t("s_gallery"), `${mb(g.used_bytes)} / ${mb(g.limit_bytes)} MB`, g.used_bytes / g.limit_bytes, g.used_bytes / g.limit_bytes > 0.85));
   }
+  const pw = ov.power || {};
+  if (pw.shutdown_requested) parts.push(stat(t("s_autostop"), t("as_now"), 1, true));
+  else if (pw.autostop_min > 0) {
+    const left = pw.autostop_min * 60 - pw.idle_s;
+    parts.push(`<div class="adm-stat"><span>${esc(t("s_autostop"))}</span><b>${esc(pw.busy ? t("as_busy") : t("as_left", { d: dur(Math.max(0, left)) }))}</b>`
+      + `<small class="muted">${esc(t("as_after", { n: pw.autostop_min }))}</small></div>`);
+  }
+  $("shutdown-banner").hidden = !pw.shutdown_requested;
+  $("shutdown-btn").hidden = !!pw.shutdown_requested;
   $("stats").innerHTML = parts.join("");
   $("sys-line").textContent = `· ${s.checkpoint || "–"} · ${s.device}`;
   setCount("overview", running + waiting);
@@ -313,6 +330,15 @@ $("lang-btn").addEventListener("click", () => {
   applyLang();
   refresh();
   loadGallery();
+});
+
+$("shutdown-btn").addEventListener("click", async () => {
+  const busy = ov?.jobs.some((j) => j.kind === "analyze" && (j.state === "running" || j.state === "queued"));
+  if (!confirm(t("confirm_shutdown")) || (busy && !confirm(t("confirm_shutdown_busy")))) return;
+  try { await api("POST", "/api/admin/shutdown"); refresh(); } catch (err) { if (err.message !== "login") toast("error", err.message); }
+});
+$("shutdown-cancel").addEventListener("click", async () => {
+  try { await api("POST", "/api/admin/shutdown/cancel"); refresh(); } catch (err) { if (err.message !== "login") toast("error", err.message); }
 });
 
 $("logout").addEventListener("click", async () => { await api("POST", "/api/admin/logout").catch(() => {}); showLogin(); });

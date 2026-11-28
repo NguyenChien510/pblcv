@@ -1,0 +1,79 @@
+# Start, stop or check the EC2 host without logging in to AWS (INSTALL.md section 6I).
+# GitHub -> Actions -> "EC2 power" -> Run workflow -> start | stop | status (also from the GitHub mobile app),
+# or from a terminal: deploy/ec2-power.sh start   (= gh workflow run ec2-power.yml -f action=start).
+# "start" waits until https://<EC2_HOST> answers (DuckDNS follows the new IP ~15 s after boot, the app then loads its
+# models for 1-2 minutes). The host also stops itself when idle (deploy/autostop).
+# Setup: an IAM user that may only start/stop this one instance (deploy/aws/ec2-power-policy.json), then in
+# Settings -> Secrets and variables -> Actions: secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY; variables
+# EC2_INSTANCE_ID (i-...), AWS_REGION (default ap-southeast-1); EC2_HOST is already there for the deploy workflow.
+name: EC2 power
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "start, stop or status"
+        type: choice
+        options: [start, stop, status]
+        default: start
+
+concurrency:
+  group: ec2-power
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  power:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+      INSTANCE: ${{ vars.EC2_INSTANCE_ID }}
+      HOST: ${{ vars.EC2_HOST }}
+      ACTION: ${{ inputs.action }}
+    steps:
+      - name: Check the settings
+        run: |
+          if [ -z "$INSTANCE" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::Missing variable EC2_INSTANCE_ID or secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (INSTALL.md 6I)"
+            exit 1
+          fi
+
+      - name: ${{ inputs.action }}
+        run: |
+          q() { aws ec2 describe-instances --instance-ids "$INSTANCE" --query "Reservations[0].Instances[0].$1" --output text; }
+          say() { echo ">> $*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          app_up() { [ -n "$HOST" ] && curl -fsS -o /dev/null --max-time 10 "https://$HOST/api/status"; }
+          state=$(q State.Name)
+          echo ">> instance $INSTANCE is $state"
+          case "$ACTION" in
+            start)
+              [ "$state" = "stopping" ] && aws ec2 wait instance-stopped --instance-ids "$INSTANCE"
+              [ "$state" != "running" ] && aws ec2 start-instances --instance-ids "$INSTANCE" > /dev/null
+              aws ec2 wait instance-running --instance-ids "$INSTANCE"
+              echo ">> running, public IP $(q PublicIpAddress); waiting for https://$HOST (DNS update + model loading)"
+              for i in $(seq 1 60); do
+                if app_up; then say "✅ https://$HOST is up (after ~$((i * 10)) s)"; exit 0; fi
+                sleep 10
+              done
+              say "⚠️ the instance runs but https://$HOST did not answer within 10 minutes"
+              exit 1 ;;
+            stop)
+              if [ "$state" != "stopped" ]; then
+                aws ec2 stop-instances --instance-ids "$INSTANCE" > /dev/null
+                aws ec2 wait instance-stopped --instance-ids "$INSTANCE"
+              fi
+              say "⏹️ stopped: only the disk is billed now" ;;
+            status)
+              behaviour=$(aws ec2 describe-instance-attribute --instance-id "$INSTANCE" --attribute instanceInitiatedShutdownBehavior \
+                          --query InstanceInitiatedShutdownBehavior.Value --output text 2>/dev/null || echo unknown)
+              if [ "$state" = "running" ] && app_up; then web="answers"; else web="does not answer"; fi
+              say "instance: $state · public IP: $(q PublicIpAddress) · https://$HOST $web · shutdown behaviour: $behaviour"
+              if [ "$behaviour" = "terminate" ]; then
+                say "❌ shutdown behaviour is terminate: the idle stop would DELETE the instance. Set it to Stop (INSTALL.md 6I)."
+                exit 1
+              fi ;;
+          esac

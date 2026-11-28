@@ -115,4 +115,10 @@ body.admin { min-height: 100vh; }
 .row.error .icon { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .row.error .what { color: var(--danger); }
 .adm-empty { margin: 4px 0; color: var(--muted); font-size: 13px; }
+.btn-danger { color: var(--danger); }
+.btn-danger:hover { border-color: var(--danger); }
+.adm-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px;
+  border-radius: var(--radius-sm); border: 1px solid var(--danger); font-size: 13.5px; font-weight: 600;
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface)); color: var(--danger); }
 .adm-stat.bad small { display: block; color: var(--danger); font-size: 12px; margin-top: 4px; }
+.adm-stat small { display: block; font-size: 11.5px; margin-top: 4px; }

@@ -474,10 +474,9 @@ Server đăng nhập GHCR bằng token tạm của chính job, nên image để 
 
 ### F. Dùng hằng ngày
 
-- **Trước demo:** EC2 → Instances → *Instance state → Start*.
-  - Khoảng 15 giây sau khi máy bật, DuckDNS trỏ tên miền về IP mới.
-  - Container tự chạy; chờ 1–2 phút để app nạp model.
-- **Sau demo:** *Instance state → Stop*, hoặc để alarm ở bước C2 tự tắt. Khi máy tắt, chỉ còn ổ đĩa tính tiền.
+- **Trước demo:** bật máy mà không cần đăng nhập AWS (mục I): GitHub → **Actions → EC2 power → Run workflow → start**, hoặc chạy `deploy/ec2-power.sh start` trong terminal.
+  - Workflow chờ tới khi web trả lời mới báo xong, khoảng 2–3 phút: máy bật, khoảng 15 giây sau DuckDNS trỏ tên miền về IP mới, rồi app nạp model.
+- **Sau demo:** không cần làm gì. Máy **tự tắt sau 30 phút không có người dùng** và không có video đang phân tích (mục I). Muốn tắt ngay thì bấm **Tắt server** trong `/admin`, hoặc chạy `deploy/ec2-power.sh stop`. Khi máy tắt, chỉ còn ổ đĩa tính tiền, khoảng $3/tháng.
 - **Cập nhật code:** push lên `main` là xong, xem tiến trình ở tab Actions.
   - Workflow chỉ chạy khi commit sửa `webapp/`, `models/`, `data/`, `utils/`, `configs/`, `web_demo.py`, `requirements.txt`, `Dockerfile`, `deploy/` hoặc chính workflow. Sửa README hay bài báo thì không deploy.
   - App không trả lời trong 5 phút thì workflow báo lỗi kèm log, và server tự chạy lại image trước đó.
@@ -527,3 +526,50 @@ Gallery lưu proxy video và kết quả phân tích lên Supabase (gói Free: 1
    Nếu project đã bị tạm dừng: vào dashboard Supabase bấm **Restore**. Trong lúc đó app vẫn chạy, chỉ thư viện không dùng được và `/admin` báo lỗi.
 
 Máy đã cài trước ngày 28/11/2026: sau lần deploy có commit này, web hết hỏi mật khẩu Caddy ngay. Gallery và `/admin` chỉ bật sau khi chạy bước 3. Các dòng `AUTH_USER`/`AUTH_HASH` cũ trong `deploy/.env` không còn tác dụng, để nguyên cũng không sao.
+
+### I. Bật/tắt không cần đăng nhập AWS, và tự tắt khi không ai dùng
+
+**Tự tắt** (đã có sẵn, không phải cài):
+- Mỗi lần deploy, `deploy/remote-deploy.sh` cài lên EC2 một timer chạy mỗi phút (`deploy/autostop/`).
+- Timer dừng máy khi **không ai truy cập trong 30 phút và không có video đang phân tích hay đang chờ**.
+  - Trang admin và chính bước kiểm tra này không tính là người dùng.
+  - Đổi số phút bằng `AUTOSTOP_IDLE_MIN` trong `~/pblcv/deploy/.env`; đặt `0` để tắt tính năng.
+- Trong `/admin`:
+  - ô **Tự tắt** cho biết còn bao lâu máy tắt;
+  - nút **Tắt server** dừng máy trong vòng 1 phút, bấm **Huỷ** trên banner kịp thì máy không tắt.
+- Alarm CPU ở bước C2 nên giữ lại làm phương án dự phòng, phòng khi app treo không trả lời.
+- **Kiểm tra một lần:** *shutdown behaviour* của máy phải là **Stop**.
+  - Đây là mặc định của EC2, kiểm tra bằng `deploy/ec2-power.sh status`.
+  - Nếu là *Terminate* thì tự tắt sẽ **xoá máy**. Sửa ở EC2 → chọn máy → *Actions → Instance settings → Change shutdown behavior → Stop*.
+
+**Bật/tắt từ GitHub** (cài một lần, đây là lần cuối phải vào AWS):
+1. **Lấy thông tin máy:** SSH vào EC2 rồi chạy
+   ```bash
+   bash ~/pblcv/deploy/aws/print-power-policy.sh
+   ```
+   Script in ra `EC2_INSTANCE_ID`, `AWS_REGION` và policy IAM đã điền sẵn. Policy chỉ cho bật/tắt đúng máy này và xem trạng thái.
+2. **Tạo IAM user:** AWS console → **IAM → Policies → Create policy → JSON**, dán policy vừa in, đặt tên `pblcv-ec2-power`.
+   - Rồi vào **IAM → Users → Create user**, tên `github-ec2-power`, không cần quyền vào console.
+   - Ở bước *Permissions* chọn **Attach policies directly → `pblcv-ec2-power`**.
+   - Mở user vừa tạo → **Security credentials → Create access key** → chọn *Application running outside AWS* → copy hai giá trị.
+3. **Thêm vào GitHub:** **Settings → Secrets and variables → Actions**:
+
+   | Tab | Tên | Giá trị |
+   | :--- | :--- | :--- |
+   | Secrets | `AWS_ACCESS_KEY_ID` | access key ở bước 2 |
+   | Secrets | `AWS_SECRET_ACCESS_KEY` | secret access key ở bước 2 |
+   | Variables | `EC2_INSTANCE_ID` | `i-...` ở bước 1 |
+   | Variables | `AWS_REGION` | ở bước 1, ví dụ `ap-southeast-1` |
+
+   Key này chỉ bật/tắt được đúng máy này; lộ ra cũng không làm được gì khác. Không dán vào chat, không commit.
+
+**Dùng:**
+- **Trên web hoặc app GitHub trên điện thoại:** **Actions → EC2 power → Run workflow**, chọn `start`, `stop` hoặc `status`.
+  - `start` chờ tới khi web trả lời rồi mới báo xanh.
+  - `status` cho biết máy đang bật hay tắt, IP, web có trả lời không, và *shutdown behaviour*.
+- **Trong terminal** (cần `gh` đã đăng nhập):
+  ```bash
+  deploy/ec2-power.sh start     # bật, chờ web sẵn sàng (2-3 phút)
+  deploy/ec2-power.sh stop      # tắt
+  deploy/ec2-power.sh status    # xem trạng thái
+  ```

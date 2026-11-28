@@ -136,9 +136,13 @@ cat > "$env_file" <<EOF
 DOMAIN=$DOMAIN
 HTTP_PORT=80
 HTTPS_PORT=443
+AUTOSTOP_IDLE_MIN=30
 EOF
 [ -n "$keep" ] && echo "$keep" >> "$env_file"
 chmod 600 "$env_file"
+
+echo "== Idle stop: the instance stops itself after AUTOSTOP_IDLE_MIN minutes without users"
+sudo bash "$DIR/deploy/autostop/install.sh" "$DIR"
 
 echo "== App settings: Supabase gallery and the /admin password"
 bash "$DIR/deploy/configure-app.sh"

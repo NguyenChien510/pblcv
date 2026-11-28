@@ -35,9 +35,15 @@
       <div class="adm-actions">
         <button class="btn btn-ghost btn-sm" id="lang-btn">EN</button>
         <a class="btn btn-ghost btn-sm" href="/" data-t="open_app">Mở trang tìm kiếm</a>
+        <button class="btn btn-ghost btn-sm btn-danger" id="shutdown-btn" data-t="shutdown">Tắt server</button>
         <button class="btn btn-ghost btn-sm" id="logout" data-t="logout">Đăng xuất</button>
       </div>
     </header>
+
+    <div class="adm-banner" id="shutdown-banner" hidden>
+      <span data-t="shutdown_pending">Máy sẽ tắt trong vòng 1 phút. Bật lại bằng GitHub → Actions → EC2 power → start.</span>
+      <button class="btn btn-ghost btn-sm" id="shutdown-cancel" data-t="cancel">Huỷ</button>
+    </div>
 
     <nav class="adm-tabs" id="tabs" role="tablist">
       <button role="tab" data-tab="overview" aria-selected="true" data-t="tab_overview">Tổng quan</button>
