@@ -20,3 +20,5 @@ ultralytics
 lap                   # BoT-SORT association (ultralytics would pip-install it at runtime otherwise)
 scipy
 openvino              # pedestrian attributes (gender) model, downloaded to checkpoints/attributes on first run
+httpx                 # Supabase gallery store (webapp/supabase_client.py)
+psutil                # /admin system panel (CPU, RAM, disk)

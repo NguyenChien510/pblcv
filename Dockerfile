@@ -30,9 +30,9 @@ CLIPModel.from_pretrained('openai/clip-vit-base-patch16'); CLIPProcessor.from_pr
 
 COPY . .
 
-RUN useradd -u 1000 -m app && mkdir -p uploads samples && chown -R app:app /app/uploads /app/samples
+RUN useradd -u 1000 -m app && mkdir -p uploads && chown -R app:app /app/uploads
 USER app
 
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 EXPOSE 8000
-CMD ["python", "web_demo.py", "--host", "0.0.0.0", "--port", "8000", "--no-browser", "--samples_dir", "samples", "--max_upload_mb", "300"]
+CMD ["python", "web_demo.py", "--host", "0.0.0.0", "--port", "8000", "--no-browser", "--max_upload_mb", "300"]

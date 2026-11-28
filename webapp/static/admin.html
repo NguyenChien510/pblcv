@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Person Search Admin</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ccircle cx='14' cy='14' r='6' fill='none' stroke='white' stroke-width='3'/%3E%3Cpath d='M19 19l6 6' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/admin.css">
+  <script>
+    try {
+      const t = localStorage.getItem("ps.theme");
+      if (t) document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
+</head>
+<body class="admin">
+  <!-- login -->
+  <main class="adm-login" id="login" hidden>
+    <form class="card" id="login-form" autocomplete="off">
+      <h1 data-t="title">Quản trị</h1>
+      <p class="muted" data-t="login_hint">Nhập mật khẩu quản trị để xem hệ thống.</p>
+      <input type="password" id="login-pw" class="adm-input" autocomplete="current-password" required>
+      <button type="submit" class="btn btn-primary btn-block" data-t="login">Đăng nhập</button>
+      <p class="adm-err" id="login-err" hidden></p>
+      <a class="muted small" href="/" data-t="back">← Về trang tìm kiếm</a>
+    </form>
+  </main>
+
+  <!-- dashboard -->
+  <div class="adm" id="dash" hidden>
+    <header class="adm-head">
+      <h1><span data-t="title">Quản trị</span> <span class="muted small" id="updated"></span><span class="sys" id="sys-line"></span></h1>
+      <div class="adm-actions">
+        <button class="btn btn-ghost btn-sm" id="lang-btn">EN</button>
+        <a class="btn btn-ghost btn-sm" href="/" data-t="open_app">Mở trang tìm kiếm</a>
+        <button class="btn btn-ghost btn-sm" id="logout" data-t="logout">Đăng xuất</button>
+      </div>
+    </header>
+
+    <nav class="adm-tabs" id="tabs" role="tablist">
+      <button role="tab" data-tab="overview" aria-selected="true" data-t="tab_overview">Tổng quan</button>
+      <button role="tab" data-tab="gallery" data-t="tab_gallery">Thư viện</button>
+      <button role="tab" data-tab="activity" data-t="tab_activity">Nhật ký</button>
+      <button role="tab" data-tab="security" data-t="tab_security">Bảo mật</button>
+    </nav>
+
+    <!-- overview: system, jobs, people online -->
+    <section class="adm-view" data-view="overview">
+      <div class="adm-stats" id="stats"></div>
+      <div class="adm-split">
+        <section class="card adm-fill">
+          <h2 data-t="jobs">Job và hàng đợi</h2>
+          <div class="adm-table-wrap"><table class="adm-table" id="jobs"></table></div>
+        </section>
+        <section class="card adm-fill">
+          <h2 data-t="online">Đang online (5 phút)</h2>
+          <div class="adm-table-wrap"><table class="adm-table" id="online"></table></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- gallery -->
+    <section class="adm-view" data-view="gallery" hidden>
+      <section class="card adm-fill">
+        <h2><span data-t="gallery">Thư viện (Supabase)</span> <span class="muted small" id="gallery-sum"></span></h2>
+        <div class="adm-table-wrap"><table class="adm-table" id="gallery"></table></div>
+      </section>
+    </section>
+
+    <!-- activity -->
+    <section class="adm-view" data-view="activity" hidden>
+      <section class="card adm-fill">
+        <h2 data-t="activity">Nhật ký hoạt động</h2>
+        <form class="adm-inline" id="act-form">
+          <input class="adm-input" id="act-ip" data-tp="ip_filter" placeholder="Lọc theo IP">
+          <select class="adm-input" id="act-action">
+            <option value="" data-t="all_actions">Mọi sự kiện</option>
+          </select>
+          <select class="adm-input" id="act-source">
+            <option value="memory" data-t="src_memory">Từ lúc server chạy</option>
+            <option value="db" data-t="src_db">Lịch sử (Supabase, 30 ngày)</option>
+          </select>
+        </form>
+        <div class="adm-table-wrap"><table class="adm-table" id="activity"></table></div>
+      </section>
+    </section>
+
+    <!-- security: blocked IPs, password -->
+    <section class="adm-view" data-view="security" hidden>
+      <div class="adm-split">
+        <section class="card adm-fill">
+          <h2 data-t="blocked">IP bị chặn</h2>
+          <form class="adm-inline" id="block-form">
+            <input class="adm-input" id="block-ip" data-tp="ip_ph" placeholder="IP" required>
+            <input class="adm-input" id="block-reason" data-tp="reason_ph" placeholder="Lý do">
+            <button class="btn btn-ghost btn-sm" data-t="block">Chặn</button>
+          </form>
+          <div class="adm-table-wrap"><table class="adm-table" id="blocked"></table></div>
+        </section>
+        <section class="card">
+          <h2 data-t="password">Đổi mật khẩu quản trị</h2>
+          <form id="pw-form" class="adm-stack" autocomplete="off">
+            <input type="password" class="adm-input" id="pw-cur" data-tp="pw_cur" placeholder="Mật khẩu hiện tại" required>
+            <input type="password" class="adm-input" id="pw-new" data-tp="pw_new" placeholder="Mật khẩu mới (≥ 8 ký tự)" minlength="8" required>
+            <input type="password" class="adm-input" id="pw-new2" data-tp="pw_new2" placeholder="Nhập lại mật khẩu mới" minlength="8" required>
+            <button class="btn btn-ghost btn-sm" data-t="save">Lưu</button>
+          </form>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="/static/js/admin.js"></script>
+</body>
+</html>

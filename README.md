@@ -225,7 +225,7 @@ python test.py --sub_dataset TVPReid-PRID --dashboard                     # vẽ
 
 ### 6.4. Web demo
 ```bash
-python web_demo.py --port 8000 --samples_dir samples
+python web_demo.py --port 8000
 ```
 Bản đang chạy: **https://findperson.duckdns.org**. Cần đăng nhập, và chỉ vào được khi máy EC2 đang bật.
 

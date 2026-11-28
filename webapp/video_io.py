@@ -80,20 +80,6 @@ def make_proxy(src: Path, dst: Path, progress: Optional[Callable[[float], None]]
     ], info["duration"], progress)
 
 
-def to_h264(src: Path, dst: Path, duration_s: float, progress: Optional[Callable[[float], None]] = None) -> None:
-    """Converts an OpenCV-written (mp4v) file into browser-playable H.264."""
-    if FFMPEG_EXE is None:
-        shutil.move(str(src), str(dst))
-        return
-    _run_ffmpeg([
-        "-i", str(src),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", "-an",
-        str(dst),
-    ], duration_s, progress)
-    src.unlink(missing_ok=True)
-
-
 def first_frame_jpeg(path: Path, max_width: int = 320) -> bytes:
     """Grabs a frame ~10% into the video as a JPEG thumbnail."""
     cap = cv2.VideoCapture(str(path))

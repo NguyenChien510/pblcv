@@ -6,7 +6,7 @@ import traceback
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class JobCancelled(Exception):
@@ -14,9 +14,10 @@ class JobCancelled(Exception):
 
 
 class Job:
-    def __init__(self, kind: str, stages: Dict[str, Tuple[float, float]]):
+    def __init__(self, kind: str, stages: Dict[str, Tuple[float, float]], meta: Optional[Dict[str, Any]] = None):
         self.id = uuid.uuid4().hex[:12]
         self.kind = kind
+        self.meta = meta or {}          # ip, video_id, video_name: shown on the admin page
         self.stages = stages            # stage -> (start_pct, end_pct) of the overall bar
         self.state = "queued"           # queued | running | done | error | cancelled
         self.stage = ""
@@ -60,6 +61,11 @@ class Job:
             "result": self.result if self.state == "done" else None,
         }
 
+    def admin_dict(self) -> Dict[str, Any]:
+        d = self.to_dict()
+        d.pop("result")
+        return {**d, **self.meta, "created": self.created, "started": self.started, "finished": self.finished}
+
 
 class JobManager:
     """Runs one job at a time (the model and detector are shared) and keeps recent job states."""
@@ -70,8 +76,9 @@ class JobManager:
         self._keep = keep
         self._lock = threading.Lock()
 
-    def submit(self, kind: str, stages: Dict[str, Tuple[float, float]], fn: Callable[[Job], Any]) -> Job:
-        job = Job(kind, stages)
+    def submit(self, kind: str, stages: Dict[str, Tuple[float, float]], fn: Callable[[Job], Any],
+               meta: Optional[Dict[str, Any]] = None) -> Job:
+        job = Job(kind, stages, meta)
         with self._lock:
             self._jobs[job.id] = job
             while len(self._jobs) > self._keep:
@@ -106,7 +113,16 @@ class JobManager:
         if job is None or job.state in ("done", "error", "cancelled"):
             return False
         job._cancel.set()
+        if job.state == "queued":       # never started: the worker skips it when its turn comes
+            job.state, job.finished = "cancelled", time.time()
         return True
+
+    def list(self) -> List[Job]:
+        with self._lock:
+            return list(self._jobs.values())
+
+    def active(self, kinds: Tuple[str, ...] = ()) -> List[Job]:
+        return [j for j in self.list() if j.state in ("queued", "running") and (not kinds or j.kind in kinds)]
 
     def busy(self) -> bool:
         return any(j.state in ("queued", "running") for j in self._jobs.values())

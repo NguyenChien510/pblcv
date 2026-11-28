@@ -250,15 +250,10 @@ RANK_COLORS = [
     ((248, 189, 56), "#38bdf8"),
     ((72, 29, 225), "#e11d48"),
 ]
-OTHER_COLOR = ((184, 163, 148), "#94a3b8")
-DARK_TEXT_RANKS = {1, 2, 3, 7, 8, 9}
 
 _MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 _STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
-
-def rank_color(rank: int) -> Tuple[Tuple[int, int, int], str]:
-    return RANK_COLORS[rank - 1] if 1 <= rank <= len(RANK_COLORS) else OTHER_COLOR
 
 
 def _jpeg(img_bgr: np.ndarray, max_size: int, quality: int = 85) -> bytes:
@@ -1485,7 +1480,9 @@ class SearchEngine:
         if tids is None:
             tids = sorted(analysis.tracks)
             analysis.track_emb = {}
-            if tids and analysis.layout != self.frame_layout:   # the active checkpoint reads another clip layout
+            # the active checkpoint reads another clip layout, or the analysis was loaded from the gallery store,
+            # which keeps no model clips (webapp/store.py): crop them again from the proxy video
+            if tids and (analysis.layout != self.frame_layout or any(analysis.tracks[t].clip is None for t in tids)):
                 if analysis.video_path is None or not analysis.video_path.exists():
                     raise RuntimeError("Video file is gone; analyse the video again with this checkpoint")
                 self._extract_crops(analysis.video_path, analysis, tids, lambda *a: None, previews=False)
@@ -1694,60 +1691,6 @@ class SearchEngine:
                 s["rank"] = r
                 s["prob"] = e / z
         return ranked
-
-    # ------------------------------------------------------------------ render
-    def render(self, video_path: Path, analysis: Analysis, ranked: List[Dict[str, Any]], prompt: str,
-               top_k: int, out_path: Path, progress: ProgressCb) -> None:
-        """Draws top-K boxes, labels and a HUD onto the proxy video (mp4v; caller converts to H.264)."""
-        cap = cv2.VideoCapture(str(video_path))
-        w, h = analysis.width, analysis.height
-        writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), analysis.fps, (w, h))
-        top = ranked[:top_k]
-        draw_order = list(reversed(top))  # #1 drawn last, on top
-        target = top[0] if top else None
-        trail: List[Tuple[int, int]] = []
-        scale = max(0.4, min(1.0, w / 1280.0))
-        n = analysis.frames_processed
-
-        for f_idx in range(n):
-            ok, frame = cap.read()
-            if not ok:
-                break
-            for s in draw_order:
-                box = analysis.tracks[s["track_id"]].boxes.get(f_idx)
-                if box is None:
-                    continue
-                x1, y1, x2, y2 = box
-                color = rank_color(s["rank"])[0]
-                thick = 3 if s["rank"] == 1 else 2
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, thick)
-                tag = f"#{s['rank']} P{s['track_id']}  {s['fused']:.3f} ({s['prob'] * 100:.0f}%)"
-                fs = 0.5 * scale + 0.1
-                (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)
-                ty = max(th + 8, y1)
-                cv2.rectangle(frame, (x1, ty - th - 8), (min(w - 1, x1 + tw + 8), ty), color, -1)
-                txt = (0, 0, 0) if s["rank"] in DARK_TEXT_RANKS else (255, 255, 255)
-                cv2.putText(frame, tag, (x1 + 4, ty - 4), cv2.FONT_HERSHEY_SIMPLEX, fs, txt, 1, cv2.LINE_AA)
-                if s["rank"] == 1:
-                    trail.append(((x1 + x2) // 2, y2))
-                    trail = trail[-30:]
-            for i in range(1, len(trail)):
-                cv2.line(frame, trail[i - 1], trail[i], RANK_COLORS[0][0], 2, cv2.LINE_AA)
-
-            hud_h = int(36 * scale + 10)
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (0, 0), (w, hud_h), (20, 16, 12), -1)
-            frame = cv2.addWeighted(overlay, 0.75, frame, 0.25, 0)
-            max_chars = max(20, int(w / (11 * scale)) - 40)
-            q = prompt if len(prompt) <= max_chars else prompt[:max_chars - 1] + "…"
-            hud = f'"{q}"   #1: P{target["track_id"]}   {f_idx + 1}/{n}' if target else f"{f_idx + 1}/{n}"
-            cv2.putText(frame, hud, (12, int(hud_h * 0.68)), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * scale + 0.08,
-                        (255, 255, 255), 1, cv2.LINE_AA)
-            writer.write(frame)
-            if f_idx % 10 == 0:
-                progress("render", f_idx + 1, n)
-        cap.release()
-        writer.release()
 
     # ------------------------------------------------------------------ serialisation
     def tracks_payload(self, analysis: Analysis) -> Dict[str, Any]:

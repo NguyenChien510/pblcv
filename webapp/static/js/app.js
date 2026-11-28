@@ -1,5 +1,5 @@
 import { t, getLang, setLang, onLangChange, applyI18n } from "./i18n.js";
-import { get, post, postBlob, upload, pollJob, downloadBlob } from "./api.js";
+import { get, post, upload, pollJob } from "./api.js";
 import { Player } from "./player.js";
 
 const $ = (id) => document.getElementById(id);
@@ -30,7 +30,7 @@ const S = {
   attrFilter: store.get("attrFilter", store.get("genderFilter", false)),
   selected: null,
   hidden: new Set(),
-  jobs: { analyze: null, render: null },
+  jobs: { analyze: null },
   searchSeq: 0,
   videoThumb: "",
   stepState: {},
@@ -54,9 +54,14 @@ function toast(kind, title, msg, ms = 4200) {
   $("toasts").appendChild(el);
   setTimeout(close, ms);
 }
+// refusals from the server (queue full, one job per address, upload limit, blocked) in the user's language
+const SERVER_ERRORS = { "already have a video being analysed": "err_own_job", "server is busy": "err_busy",
+  "Too many uploads": "err_uploads", "blocked by the administrator": "err_blocked",
+  "still downloading from the gallery": "err_downloading" };
 const fail = (e) => {
   if (e?.cancelled) return toast("warn", t("toast_cancelled"));
-  toast("error", t("toast_error"), e?.status === 0 ? t("toast_offline") : e?.message, 7000);
+  const known = Object.entries(SERVER_ERRORS).find(([s]) => e?.message?.includes(s));
+  toast("error", t("toast_error"), e?.status === 0 ? t("toast_offline") : known ? t(known[1]) : e?.message, 7000);
 };
 const fmtSec = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s` : `${s.toFixed(s < 10 ? 1 : 0)}s`);
 const fmtClock = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${(s % 60).toFixed(1).padStart(4, "0")}`;
@@ -100,6 +105,8 @@ function rerank() {
 async function loadStatus() {
   const st = await get("/api/status");
   S.status = st;
+  $("save-gallery-row").hidden = !st.gallery;
+  if (st.gallery) loadGallery();
   S.palette = st.palette;
   S.defaults = st.default_weights;
   // Saved weights follow the defaults they were made from; new defaults replace them
@@ -142,24 +149,56 @@ $("ckpt-select").addEventListener("change", async (e) => {
 });
 
 // ======================================================================== step 1: video
-async function loadSamples() {
-  const list = await get("/api/samples").catch(() => []);
-  $("samples-wrap").hidden = !list.length;
-  $("samples").innerHTML = list.map((s) => `
-    <button type="button" class="sample" data-name="${esc(s.name)}" title="${esc(s.name)} · ${s.size_mb} MB">
-      <img src="${esc(s.thumb_url)}" alt="" loading="lazy"><span>${esc(s.name)}</span>
-    </button>`).join("");
+const saveToGallery = () => !$("save-gallery-row").hidden && $("save-gallery").checked;
+$("save-gallery").checked = store.get("saveGallery", true);
+$("save-gallery").addEventListener("change", (e) => store.set("saveGallery", e.target.checked));
+
+/** Shared gallery of analysed videos (Supabase): picking one loads its stored analysis without re-analysing.
+ *  A collapsible box of compact rows; the open/closed state is remembered. */
+let galleryItems = [];
+async function loadGallery() {
+  const g = await get("/api/gallery").catch(() => null);
+  galleryItems = g?.videos || [];
+  $("gallery-wrap").hidden = !galleryItems.length;
+  $("gallery-count").textContent = galleryItems.length || "";
+  $("gallery-filter").hidden = galleryItems.length <= 6;
+  renderGallery();
 }
 
-$("samples").addEventListener("click", async (e) => {
-  const btn = e.target.closest(".sample");
+function renderGallery() {
+  const q = $("gallery-filter").value.trim().toLowerCase();
+  const list = q ? galleryItems.filter((v) => v.name.toLowerCase().includes(q)) : galleryItems;
+  $("gallery").innerHTML = list.length ? list.map((v) => {
+    const analysed = v.n_tracks != null;
+    const sub = [analysed ? t("gallery_people", { n: v.n_tracks }) : t("gallery_not_analysed"),
+      v.duration ? fmtClock(v.duration) : "", new Date(v.analysed_at || v.created_at).toLocaleDateString(getLang())].filter(Boolean).join(" · ");
+    const active = S.video?.video_id === v.video_id ? " active" : "";
+    return `<button type="button" class="gitem${active}" data-gid="${esc(v.video_id)}" data-analysed="${analysed}" title="${esc(v.name)}">
+      <img src="${esc(v.thumb_url)}" alt="" loading="lazy">
+      <span><b>${esc(v.name)}</b><small class="${analysed ? "" : "todo"}">${esc(sub)}</small></span></button>`;
+  }).join("") : `<div class="gbox-empty">${esc(t("gallery_no_match"))}</div>`;
+}
+
+function setGalleryOpen(open) {
+  $("gallery-wrap").dataset.open = String(open);
+  $("gallery-toggle").setAttribute("aria-expanded", String(open));
+  store.set("galleryOpen", open);
+}
+setGalleryOpen(store.get("galleryOpen", true));
+$("gallery-toggle").addEventListener("click", () => setGalleryOpen($("gallery-wrap").dataset.open !== "true"));
+$("gallery-filter").addEventListener("input", renderGallery);
+
+$("gallery").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".gitem");
   if (!btn) return;
-  document.querySelectorAll(".sample").forEach((b) => b.classList.toggle("active", b === btn));
+  document.querySelectorAll(".gitem").forEach((b) => b.classList.toggle("active", b === btn));
   try {
     S.videoThumb = btn.querySelector("img")?.src || "";
-    setVideo(await post("/api/videos/sample", { name: btn.dataset.name }));
+    await setVideo(await post(`/api/gallery/${btn.dataset.gid}/open`));
+    if (btn.dataset.analysed === "true" && S.video?.ready) analyze();   // stored result: load it straight away
   } catch (err) { fail(err); }
 });
+
 
 const dz = $("dropzone");
 ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); }));
@@ -176,8 +215,9 @@ async function uploadFile(file) {
   dz.querySelector(".dz-title").textContent = t("dz_uploading");
   dz.querySelector(".dz-sub").textContent = file.name;
   try {
-    const v = await upload("/api/videos", file, (p) => { bar.style.width = `${p * 100}%`; prog.querySelector(".dz-pct").textContent = `${Math.round(p * 100)}%`; });
-    document.querySelectorAll(".sample").forEach((b) => b.classList.remove("active"));
+    const v = await upload("/api/videos", file, (p) => { bar.style.width = `${p * 100}%`; prog.querySelector(".dz-pct").textContent = `${Math.round(p * 100)}%`; },
+                           { save: saveToGallery() });
+    document.querySelectorAll(".gitem").forEach((b) => b.classList.remove("active"));
     S.videoThumb = "";
     toast("success", t("toast_uploaded"), file.name);
     setVideo(v);
@@ -193,6 +233,8 @@ async function uploadFile(file) {
 async function setVideo(v) {
   S.video = v;
   S.analysis = null;
+  $("reanalyse-btn").hidden = true;
+  $("gallery-note").hidden = true;
   S.search = null;
   S.ranked = [];
   S.selected = null;
@@ -239,6 +281,20 @@ async function setVideo(v) {
   renderVideoMeta();
   updateFramesNote();
   updateSteps();
+  if (S.status?.gallery && saveToGallery()) watchGallerySave(v.video_id);
+}
+
+/** Tells the user when a video could not be kept in the gallery (storage full or Supabase down). */
+async function watchGallerySave(vid) {
+  for (let i = 0; i < 40 && S.video?.video_id === vid; i++) {
+    const v = await get(`/api/videos/${vid}`).catch(() => null);
+    if (!v || v.gallery === "saved" || v.gallery === "off") return;
+    if (v.gallery === "full" || v.gallery === "error") {
+      toast("warn", t(v.gallery === "full" ? "gallery_full" : "gallery_error"), t("gallery_not_kept"), 9000);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 }
 
 function renderVideoMeta() {
@@ -270,10 +326,11 @@ function updateFramesNote() {
 }
 
 
-$("analyze-btn").addEventListener("click", analyze);
+$("analyze-btn").addEventListener("click", () => analyze());
+$("reanalyse-btn").addEventListener("click", () => analyze(true));
 $("analyze-cancel").addEventListener("click", () => { if (S.jobs.analyze) post(`/api/jobs/${S.jobs.analyze}/cancel`).catch(() => {}); });
 
-async function analyze() {
+async function analyze(reanalyse = false) {
   const v = S.video;
   if (!v?.ready) { toast("info", t("need_video")); return; }
   if (S.jobs.analyze) { toast("info", t("job_busy")); return; }
@@ -281,8 +338,9 @@ async function analyze() {
   btn.classList.add("loading");
   const box = $("analyze-progress");
   try {
-    const res = await post(`/api/videos/${v.video_id}/analyze`, analyzeParams());
+    const res = await post(`/api/videos/${v.video_id}/analyze`, { ...analyzeParams(), reanalyse });
     let aid = res.analysis_id;
+    let fromGallery = false;
     if (res.cached) {
       toast("info", t("toast_cached"));
     } else {
@@ -294,9 +352,12 @@ async function analyze() {
         $("analyze-eta").textContent = j.eta_s != null ? t("eta", { s: fmtSec(j.eta_s) }) : "";
       });
       aid = out.analysis_id;
+      fromGallery = !!out.from_gallery;
     }
     if (S.video?.video_id !== v.video_id) return;
-    await loadAnalysis(aid, !res.cached);
+    await loadAnalysis(aid, !res.cached && !fromGallery);
+    if (fromGallery) toast("success", t("toast_from_gallery"), t("toast_analyzed_sub_gallery", { n: S.analysis.tracks.length }));
+    else if (!res.cached && S.status?.gallery) setTimeout(loadGallery, 8000);   // the save runs in the background
     setCollapsed("step-analyze", true);
   } catch (err) {
     fail(err);
@@ -322,6 +383,9 @@ function setStage(stage, p) {
 async function loadAnalysis(aid, fresh) {
   const a = await get(`/api/analyses/${aid}`);
   S.analysis = a;
+  $("reanalyse-btn").hidden = false;
+  $("gallery-note").hidden = !a.from_gallery;
+  if (a.from_gallery) $("gallery-note").textContent = t("gallery_note", { date: new Date(a.stored_at).toLocaleString(getLang()) });
   S.search = null;
   S.ranked = [];
   S.selected = null;
@@ -667,54 +731,6 @@ $("cands").addEventListener("click", (e) => {
   if (card) select(Number(card.dataset.id));
 });
 
-// ======================================================================== outputs
-function rankBody() {
-  return { prompt: S.search.prompt, weights: normWeights(), top_k: S.topK, lang: getLang(),
-           attr_filter: S.attrFilter && !!S.search.constraints?.length };
-}
-
-$("render-btn").addEventListener("click", async () => {
-  if (!S.search) { toast("info", t("need_search")); $("prompt").focus(); return; }
-  if (S.jobs.render) { toast("info", t("job_busy")); return; }
-  const btn = $("render-btn");
-  const prog = btn.querySelector(".btn-progress");
-  btn.classList.add("loading");
-  prog.hidden = false;
-  try {
-    const { job_id } = await post(`/api/analyses/${S.analysis.analysis_id}/render`, rankBody());
-    S.jobs.render = job_id;
-    const out = await pollJob(job_id, (j) => { prog.firstElementChild.style.width = `${j.pct}%`; });
-    toast("success", t("toast_render_done"));
-    const a = Object.assign(document.createElement("a"), { href: `${out.url}?download=${encodeURIComponent(out.filename)}`, download: out.filename });
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } catch (err) {
-    fail(err);
-  } finally {
-    S.jobs.render = null;
-    btn.classList.remove("loading");
-    prog.hidden = true;
-    prog.firstElementChild.style.width = "0";
-  }
-});
-
-$("report-btn").addEventListener("click", async () => {
-  if (!S.search) { toast("info", t("need_search")); $("prompt").focus(); return; }
-  const btn = $("report-btn");
-  if (btn.classList.contains("loading")) return;
-  btn.classList.add("loading");
-  try {
-    const { blob, filename } = await postBlob(`/api/analyses/${S.analysis.analysis_id}/report`, rankBody());
-    downloadBlob(blob, filename);
-    toast("success", t("toast_report_done"), filename);
-  } catch (err) {
-    fail(err);
-  } finally {
-    btn.classList.remove("loading");
-  }
-});
-
 // ======================================================================== steps, theme, language, keys
 function setCollapsed(id, collapsed) {
   const el = $(id);
@@ -750,7 +766,9 @@ function updateSteps() {
     $("as-main").textContent = t("as_main", { n: S.analysis.frames_processed });
     $("as-sub").textContent = t("as_sub", { persons: S.analysis.tracks.length });
   }
-  $("analyze-btn").querySelector("span").textContent = t(analysed ? "reanalyze" : "analyze");
+  // once analysed, the main button would only reuse the result: offer the real fresh run instead
+  $("analyze-btn").hidden = analysed;
+  $("reanalyse-btn").hidden = !analysed;
 }
 
 $("theme-btn").addEventListener("click", () => {
@@ -793,5 +811,4 @@ document.addEventListener("keydown", (e) => {
   }
   renderWeights();
   updateSteps();
-  loadSamples();
 })();

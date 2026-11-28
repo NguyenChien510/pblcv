@@ -94,10 +94,25 @@
             <span class="dz-progress" hidden><span class="bar"><i></i></span><span class="dz-pct"></span></span>
           </label>
 
-          <div class="samples-wrap" id="samples-wrap" hidden>
-            <span class="label" data-i18n="samples">Video mẫu</span>
-            <div class="samples" id="samples"></div>
+          <label class="switch" id="save-gallery-row" data-i18n-title="save_gallery_info" title="" hidden>
+            <input type="checkbox" id="save-gallery" checked>
+            <span class="track"></span>
+            <span data-i18n="save_gallery">Lưu vào thư viện chung</span>
+          </label>
+
+          <div class="gbox" id="gallery-wrap" data-open="true" hidden>
+            <button type="button" class="gbox-head" id="gallery-toggle" aria-expanded="true" aria-controls="gallery-body">
+              <svg class="gbox-icon"><use href="#i-film"/></svg>
+              <span data-i18n="gallery">Thư viện video</span>
+              <span class="gbox-count" id="gallery-count"></span>
+              <svg class="gbox-chev"><use href="#i-chevron"/></svg>
+            </button>
+            <div class="gbox-body" id="gallery-body">
+              <input type="search" class="gbox-filter" id="gallery-filter" data-i18n-placeholder="gallery_filter" placeholder="" hidden>
+              <div class="gbox-list" id="gallery"></div>
+            </div>
           </div>
+
         </div>
       </section>
 
@@ -118,6 +133,10 @@
 
           <button type="button" class="btn btn-primary btn-block btn-md" id="analyze-btn">
             <svg><use href="#i-spark"/></svg><span data-i18n="analyze">Phân tích video</span>
+          </button>
+          <p class="note" id="gallery-note" hidden></p>
+          <button type="button" class="btn btn-ghost btn-block btn-md" id="reanalyse-btn" data-i18n-title="reanalyse_info" title="" hidden>
+            <svg><use href="#i-spark"/></svg><span data-i18n="reanalyse">Phân tích lại</span>
           </button>
         </div>
 
@@ -176,7 +195,7 @@
         <h1 data-i18n="empty_title">Tìm một người trong video chỉ bằng lời mô tả</h1>
         <p data-i18n="empty_sub">Mô hình SpaceTime-DSCA so khớp câu mô tả với ngoại hình và chuyển động của từng người được theo vết trong video.</p>
         <ol class="how">
-          <li><b>1</b><span data-i18n="how_1">Tải lên hoặc chọn video mẫu</span></li>
+          <li><b>1</b><span data-i18n="how_1">Tải video lên hoặc chọn trong thư viện</span></li>
           <li><b>2</b><span data-i18n="how_2">Phân tích một lần: phát hiện, theo vết, mã hóa</span></li>
           <li><b>3</b><span data-i18n="how_3">Nhập mô tả, đổi mô tả bao nhiêu lần cũng được</span></li>
         </ol>
@@ -224,19 +243,14 @@
         </div>
       </div>
 
+    </section>
+
+    <!-- ============ PANEL: ranking (third column on wide screens) ============ -->
+    <aside class="panel" id="panel">
       <div class="card results" id="results" hidden>
         <div class="summary" id="summary"></div>
         <div class="results-head">
           <h2><span data-i18n="candidates">Ứng viên</span> <span class="count" id="cand-count"></span></h2>
-          <div class="actions">
-            <button type="button" class="btn btn-ghost" id="render-btn">
-              <svg><use href="#i-download"/></svg><span data-i18n="dl_mp4">Tải MP4 đã đánh dấu</span>
-              <span class="btn-progress" hidden><i></i></span>
-            </button>
-            <button type="button" class="btn btn-ghost" id="report-btn">
-              <svg><use href="#i-file"/></svg><span data-i18n="dl_report">Xuất báo cáo</span>
-            </button>
-          </div>
         </div>
         <div class="rank-toolbar" id="rank-toolbar">
           <div class="wpop-anchor">
@@ -297,7 +311,7 @@
           </label>
         </div>
         <div class="cands" id="cands"></div>
-        <p class="note" data-i18n="score_note">Điểm = độ tương đồng cosine văn bản–video. Xác suất khớp = softmax(điểm / 0.07) trên các người trong video này.</p>
+        <p class="note score-note" data-i18n="score_note">Điểm = độ tương đồng cosine văn bản–video. Xác suất khớp = softmax(điểm / 0.07) trên các người trong video này.</p>
       </div>
 
       <div class="card no-person" id="no-person" hidden>
@@ -305,7 +319,7 @@
         <h2 data-i18n="no_person">Không phát hiện người nào</h2>
         <p data-i18n="no_person_sub">Thử giảm ngưỡng phát hiện, tăng số frame hoặc chọn video khác.</p>
       </div>
-    </section>
+    </aside>
   </main>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>

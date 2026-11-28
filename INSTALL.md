@@ -97,7 +97,7 @@ Các model phụ của web demo **tự tải** ở lần chạy đầu, không c
 ```bash
 python web_demo.py                                   # tự mở http://127.0.0.1:8000
 python web_demo.py --port 8080 --no-browser          # đổi cổng, không mở trình duyệt
-python web_demo.py --samples_dir samples --no_clip   # thư mục video mẫu; tắt nhánh CLIP phụ
+python web_demo.py --no_clip                         # tắt nhánh CLIP phụ (đỡ ~600 MB RAM)
 ```
 Dừng server bằng **Ctrl + C**.
 

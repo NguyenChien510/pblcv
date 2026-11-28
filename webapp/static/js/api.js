@@ -43,11 +43,12 @@ export async function postBlob(url, data) {
 }
 
 /** Uploads a file with progress (fetch has no upload progress). */
-export function upload(url, file, onProgress) {
+export function upload(url, file, onProgress, fields = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const form = new FormData();
     form.append("file", file);
+    for (const [k, v] of Object.entries(fields)) form.append(k, String(v));
     xhr.open("POST", url);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
     xhr.onload = () => {
