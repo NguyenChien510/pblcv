@@ -68,6 +68,10 @@ dl https://github.com/NguyenChien510/pblcv/releases/download/v2.0/best.pth "$CK/
 dl https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt "$DIR/yolov8n.pt"
 dl https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n-pose.pt "$CK/yolov8n-pose.pt"
 OMZ=https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1
+if [ ! -s "$CK/attributes/person_attribute_infer/inference.pdmodel" ]; then   # PA-100K attributes (PaddleClas PULC)
+  dl https://paddleclas.bj.bcebos.com/models/PULC/inference/person_attribute_infer.tar "$CK/attributes/par.tar"
+  tar -xf "$CK/attributes/par.tar" -C "$CK/attributes" && rm "$CK/attributes/par.tar"
+fi
 for m in reid:person-reidentification-retail-0277 attributes:person-attributes-recognition-crossroad-0230; do
   folder="${m%%:*}"; name="${m#*:}"
   for ext in xml bin; do

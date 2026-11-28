@@ -418,6 +418,16 @@ function attrBadges(tr, s) {
     const best = acts.reduce((x, y) => (a[y] > a[x] ? y : x));
     html += `<span class="achip" title="${esc(t("act_info", { speed: (a.speed ?? 0).toFixed(2) }))}">${esc(t(`attr_${best}`))}</span>`;
   }
+  // Clear direction of motion, unless the query asks about a direction
+  const dirs = ["act_left", "act_right", "act_toward", "act_away"].filter((k) => a[k] >= 0.7);
+  if (dirs.length && !cs.some((c) => ["act_left", "act_right", "act_toward", "act_away"].includes(c.key))) {
+    const best = dirs.reduce((x, y) => (a[y] > a[x] ? y : x));
+    html += `<span class="achip" title="${esc(t("dir_info"))}">${esc(t(`attr_${best}`))}</span>`;
+  }
+  // Suitcase seen with the person, unless the query asks about one (its chip shows the match below)
+  if (a.suitcase >= 0.5 && !cs.some((c) => c.key === "suitcase")) {
+    html += `<span class="achip" title="${esc(t("suitcase_info", { pct: Math.round((a.obj_suitcase ?? 0) * 100) }))}">${esc(t("attr_suitcase"))}</span>`;
+  }
   for (const c of cs) {
     if (c.key === "gender") continue;
     const p = s.attr_p?.[c.key];

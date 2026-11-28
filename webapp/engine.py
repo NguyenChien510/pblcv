@@ -54,7 +54,7 @@ ENCODE_BATCH = 4
 SOFTMAX_TAU = 0.07          # same temperature as the InfoNCE training loss
 
 # --- tracking (YOLO + BoT-SORT with native ReID) ---
-TRACKER_VERSION = "botsort-reid-v6-action"   # part of the analysis cache key; bump when analysis output changes
+TRACKER_VERSION = "botsort-reid-v9-direction"   # part of the analysis cache key; bump when analysis output changes
 DETECT_IMGSZ = 960          # upscaled inference finds small, distant people in crowds (Accurate mode)
 DETECT_IMGSZ_FAST = 640     # Balanced/Fast modes: skips tiny far-away people -> fewer tracks to encode
 DETECT_CONF_LOW = 0.1       # low-score boxes feed BoT-SORT's second association stage
@@ -82,6 +82,19 @@ OMZ_URL = "https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.
 ATTR_NAMES = ["male", "bag", "backpack", "hat", "longsleeves", "longpants", "longhair", "coat"]
 MALE_WORDS = {"man", "men", "male", "males", "guy", "guys", "boy", "boys", "gentleman", "gentlemen", "he", "him", "his"}
 FEMALE_WORDS = {"woman", "women", "female", "females", "lady", "ladies", "girl", "girls", "she", "her", "hers"}
+# PA-100K pedestrian attributes: PaddleClas PULC person_attribute (PP-LCNet x1.0, Apache-2.0), read by OpenVINO's
+# Paddle frontend from checkpoints/attributes/person_attribute_infer/ (downloaded once). 192x256 RGB, ImageNet
+# normalisation, 26 sigmoid scores in PA-100K order (PAR_INDEX lists the ones used). Ranking AUC on all 6,559 TVPReid
+# tracklets, labels taken from the captions (crossroad-0230 -> PA-100K): female 0.80 -> 0.90, hat 0.68 -> 0.77,
+# backpack 0.76 -> 0.79 (0.81 when averaged with crossroad-0230, which is what backpack uses), long trousers
+# 0.83 -> 0.95, shorts 0.91 -> 0.95 (only 7 positives), skirt/dress - -> 0.95, long coat 0.58 -> 0.68 (captions call
+# jackets coats), bag 0.61 -> 0.74. crossroad-0230 still gives long hair, long sleeves and the colour points.
+PAR_DIR = "person_attribute_infer"
+PAR_URL = "https://paddleclas.bj.bcebos.com/models/PULC/inference/person_attribute_infer.tar"
+PAR_INDEX = {"hat": 0, "longcoat": 10, "longpants": 11, "shorts": 12, "skirt": 13, "handbag": 15, "shoulderbag": 16,
+             "backpack": 17, "female": 22}
+PAR_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+PAR_STD = np.array([0.229, 0.224, 0.225], np.float32)
 POSE_MODEL = "yolov8n-pose.pt"  # shoulders/hips/knees locate the top & bottom garment inside each crop
 
 # Query constraints matched against the attribute model; fused -= weight * (1 - p_match). The weights are small on
@@ -89,15 +102,27 @@ POSE_MODEL = "yolov8n-pose.pt"  # shoulders/hips/knees locate the top & bottom g
 # 0.6-0.7), and with the m3c joint checkpoint weights 3x larger cost 13 points of R@1 (60 -> 47, mean of the three
 # subsets), while this scale is neutral there and still reorders close calls. "coat" (p ~0.1 for everyone) and
 # "wears long pants" (AUC 0.52) carried no signal and are not used as constraints.
-CONSTRAINT_WEIGHTS = {"gender": 0.09, "top_color": 0.08, "bottom_color": 0.06, "backpack": 0.05, "bag": 0.03,
-                      "hat": 0.05, "longsleeves": 0.03, "longpants": 0.03, "longhair": 0.05}
-LOOSE_COLOR_WEIGHT = 0.05   # "a man in red" (color without a garment) -> top_color with this weight
+# Ranking weights re-chosen 2026-11-28 with the PA-100K attributes, on TVPReid val (mean R@1 over the subsets, demo
+# scoring) and half of a 46-query set written for the station clip, checked on TVPReid test and the other half.
+# Gender and top colour carry no ranking weight: alone each lowered TVPReid val R@1 by 1.3; dropping both raised it
+# from 55.6 to 60.2 (test 55.7 -> 57.2), above using no constraints (59.9 / 57.0). On the station clip the top-1 was
+# never confidently of the wrong gender without constraints (66 gender queries), so DSCA + CLIP already get gender
+# right there, and dropping top colour helped there too (EXT 27 -> 29 of 46, GT15 14 -> 15). With these weights the
+# real-footage sets give TESTVIDEO 7/9, GT15 15/15, EXT 27/46 against 7/9, 14/15, 24/46 with no constraints. Zero-
+# weight constraints still show as chips and still count for the "matching attributes only" filter.
+CONSTRAINT_WEIGHTS = {"gender": 0.0, "top_color": 0.0, "bottom_color": 0.06, "backpack": 0.05, "bag": 0.03,
+                      "hat": 0.05, "longsleeves": 0.03, "longpants": 0.03, "longhair": 0.05, "suitcase": 0.15,
+                      "shorts": 0.05, "skirt": 0.05, "longcoat": 0.03}
+LOOSE_COLOR_WEIGHT = 0.0    # "a man in red" (color without a garment) -> top_color; no ranking weight (see above)
 ATTR_PATTERNS = {           # key -> (regex meaning "yes" or None, regex meaning "no" or None)
     "backpack": (r"\b(backpacks?|rucksacks?)\b", None),
     "bag": (r"\b(bags?|handbags?|purses?|totes?)\b", None),
     "hat": (r"\b(hats?|caps?|beanies?|helmets?)\b", None),
     "longsleeves": (r"\blong[- ]?sleeve[ds]?\b", r"\b(short[- ]?sleeve[ds]?|sleeveless|t-?shirts?|tees?|tank tops?)\b"),
-    "longpants": (None, r"\bshorts\b"),
+    "longpants": (r"\b(trousers|pants|jeans|slacks|leggings|sweatpants|chinos|joggers)\b", None),
+    "shorts": (r"\bshorts\b", None),
+    "skirt": (r"\b(skirts?|dress|dresses|gowns?)\b", None),           # \b: "dressed in" is not a dress
+    "longcoat": (r"\b(coats?|overcoats?|trench ?coats?|raincoats?|parkas?)\b", None),
     "longhair": (r"\b(long[- ]hair(ed)?|ponytail)\b", r"\b(short[- ]hair(ed)?|bald)\b"),
 }
 # Actions are measured from the track itself, not by the text model: TVPReid captions mention walking in 57% of
@@ -123,11 +148,49 @@ ACTION_PATTERNS = {         # constraint key -> query regex
     "act_sit": r"\b(sit|sits|sitting|sat|seated)\b",
 }
 ACTION_WEIGHTS = {"act_run": 0.10, "act_walk": 0.10, "act_stand": 0.10, "act_sit": 0.08}
+
+# Direction of motion in the image (viewer's left/right; towards/away from the camera), from the track's boxes:
+# least-squares slopes of the box centre (lateral, body heights/s), of log box height and of the feet position, per
+# contiguous run that keeps off the frame border, weighted by run length. TVPReid captions describe motion mostly as
+# direction ("walking to the left", "towards the camera"). Checked against drawn trajectories: all 16 measurable
+# TESTVIDEO tracks and the most lateral station-clip tracks went the way the slopes say. Approach uses both log-height
+# growth and the feet moving down the image, because either alone disagreed for people cut by the bottom border.
+DIR_LATERAL_MID, DIR_LATERAL_SCALE = 0.10, 0.035      # |lateral slope| in body heights/s at which p = 0.5
+DIR_APPROACH_UNITS = (0.05, 0.15)                     # log-height /s and feet body-heights/s that count as one unit
+DIR_APPROACH_MID, DIR_APPROACH_SCALE = 1.0, 0.35      # summed units at which p(towards) = 0.5
+DIRECTION_PATTERNS = {
+    "act_toward": r"\b(towards?|to) (the )?camera\b|\btowards? (us|the viewer)\b|\b(approach|approaches|approaching) (the )?camera\b"
+                  r"|\bcoming (closer|towards?|this way)\b",
+    "act_away": r"\baway from (the )?camera\b|\b(walk|walks|walking|walked|move|moves|moving|head|heads|heading|go|goes|"
+                r"going|run|runs|running) away\b",
+    "act_left": r"\b(to|towards?) the left\b|\bleftwards?\b|\bfrom (the )?right to (the )?left\b"
+                r"|\b(heading|going|walking|moving|turning) left\b",
+    "act_right": r"\b(to|towards?) the right\b|\brightwards?\b|\bfrom (the )?left to (the )?right\b"
+                 r"|\b(heading|going|walking|moving|turning) right\b",
+}
+
+# Objects that travel with a person, found by the person detector in the same forward pass (YOLO COCO classes,
+# _split_objects keeps them away from the tracker). Each object box goes to the best-fitting visible person of its
+# frame (_object_fit); a track's score is the fraction of its frames with that object. Checked by eye on the station
+# clip (ok.mp4): all 9 tracks with a suitcase fraction >= 0.35 had a suitcase, 0.1-0.3 was mixed (crowds of luggage);
+# handbags are often hidden by the body, so their fractions run lower. Tried and not used: bicycles (COCO 1; a walked
+# bicycle is mostly hidden by its owner and got 5 frames for the owner and for a passer-by alike), an AVA action model
+# (SlowFast R50 fired only on walk/stand/carry on this footage) and CLIP zero-shot (3/8 suitcase carriers in its top 8
+# against 7/8 here). COCO has no stroller class. The suitcase weight (0.15, larger than the attribute weights because
+# the detector is far more precise than the attribute model) was picked on the same clip: suitcase carriers in the top
+# 5 of six suitcase queries went 5/30 without the constraint, 14/30 at 0.08, 20/30 at 0.16 (0.24: 23/30, but then
+# the suitcase starts to outweigh the clothing words).
+OBJECT_CLASSES = {28: "suitcase", 26: "handbag"}
+OBJECT_MIN_CONF = 0.25
+OBJECT_FRAC_MID = {"suitcase": 0.25, "handbag": 0.20}   # fraction of the track's frames at which p = 0.5
+OBJECT_FRAC_SCALE = 0.06
+SUITCASE_PATTERN = (r"\b(trolley bags?|roller bags?|rolling bags?|wheeled bags?|suitcases?|luggage|trolleys?|"
+                    r"carry-ons?)\b")   # longer phrases first, so "trolley bag" is removed whole before the bag check
 TOP_GARMENTS = {"shirt", "shirts", "t-shirt", "tshirt", "tee", "top", "jacket", "coat", "sweater", "hoodie", "blouse",
                 "vest", "dress", "suit", "cardigan", "blazer", "jumper", "sweatshirt", "polo", "parka", "overcoat"}
 BOTTOM_GARMENTS = {"pants", "trousers", "jeans", "shorts", "skirt", "leggings", "sweatpants"}
 OTHER_ITEMS = {"bag", "bags", "backpack", "handbag", "purse", "hat", "cap", "shoes", "sneakers", "boots", "hair",
-               "umbrella", "suitcase", "glasses", "sunglasses", "helmet", "beanie", "scarf", "mask", "socks"}
+               "umbrella", "suitcase", "suitcases", "luggage", "trolley", "glasses", "sunglasses", "helmet", "beanie", "scarf", "mask", "socks"}
 COLOR_ALIASES = {"black": "black", "white": "white", "grey": "grey", "gray": "grey", "silver": "grey",
                  "red": "red", "maroon": "red", "burgundy": "red", "orange": "orange", "yellow": "yellow",
                  "gold": "yellow", "green": "green", "olive": "green", "blue": "blue", "navy": "blue",
@@ -294,6 +357,10 @@ def query_attributes(prompt: str, with_attrs: bool = True) -> List[Dict[str, Any
     text = prompt.lower()
     out: List[Dict[str, Any]] = [{"key": key, "value": True, "weight": ACTION_WEIGHTS[key]}
                                  for key, rx in ACTION_PATTERNS.items() if re.search(rx, text)]
+    out += [{"key": key, "value": True, "weight": ACTION_WEIGHTS["act_walk"]}
+            for key, rx in DIRECTION_PATTERNS.items() if re.search(rx, text)]
+    if re.search(SUITCASE_PATTERN, text):     # measured from the detector's object boxes, not the attribute model
+        out.append({"key": "suitcase", "value": True, "weight": CONSTRAINT_WEIGHTS["suitcase"]})
     if not with_attrs:
         return out
     words = re.findall(r"[a-z]+(?:-[a-z]+)?|/", text)
@@ -320,8 +387,9 @@ def query_attributes(prompt: str, with_attrs: bool = True) -> List[Dict[str, Any
     if bottom_c:
         out.append({"key": "bottom_color", "value": sorted(set(bottom_c)), "weight": CONSTRAINT_WEIGHTS["bottom_color"]})
 
+    no_luggage = re.sub(SUITCASE_PATTERN, " ", text)    # "trolley bag" is luggage, not a handbag
     for key, (yes, no) in ATTR_PATTERNS.items():
-        if yes and re.search(yes, text):
+        if yes and re.search(yes, no_luggage if key == "bag" else text):
             out.append({"key": key, "value": True, "weight": CONSTRAINT_WEIGHTS[key]})
         elif no and re.search(no, text):
             out.append({"key": key, "value": False, "weight": CONSTRAINT_WEIGHTS[key]})
@@ -386,6 +454,54 @@ def track_speeds(boxes: Dict[int, List[int]], fps: float, width: int = 0, height
     return np.array(out)
 
 
+def track_direction(boxes: Dict[int, List[int]], fps: float, width: int, height: int) -> Optional[Tuple[float, float, float]]:
+    """
+    (lateral, log-height, feet) slopes per second of a track, lateral and feet in body heights: least squares per
+    contiguous run of frames whose box keeps off the frame border, weighted by run duration. None when no run of at
+    least ACTION_MIN_TRACK_S * 0.75 s is left.
+    """
+    frames = sorted(boxes)
+    if len(frames) < ACTION_MIN_TRACK_S * fps:
+        return None
+    e = ACTION_EDGE_PX
+    runs, cur = [], [frames[0]]
+    for f in frames[1:]:
+        if f == cur[-1] + 1:
+            cur.append(f)
+        else:
+            runs.append(cur)
+            cur = [f]
+    runs.append(cur)
+    acc, total = np.zeros(3), 0.0
+    for run in runs:
+        ok = [f for f in run if boxes[f][0] > e and boxes[f][1] > e and boxes[f][2] < width - e and boxes[f][3] < height - e
+              and boxes[f][3] > boxes[f][1]]
+        if len(ok) < 0.75 * ACTION_MIN_TRACK_S * fps:
+            continue
+        t = (np.asarray(ok, float) - ok[0]) / fps
+        dur = float(t[-1])
+        if dur < 0.5:
+            continue
+        b = np.asarray([boxes[f] for f in ok], float)
+        hs = b[:, 3] - b[:, 1]
+        hm = float(np.median(hs))
+        series = ((b[:, 0] + b[:, 2]) / 2 / hm, np.log(hs), b[:, 3] / hm)
+        acc += dur * np.array([np.polyfit(t, v, 1)[0] for v in series])
+        total += dur
+    return None if total == 0 else tuple(float(v) for v in acc / total)
+
+
+def direction_probs(slopes: Tuple[float, float, float]) -> Dict[str, float]:
+    """act_left/act_right/act_toward/act_away from track_direction slopes (image coordinates, viewer's left/right)."""
+    lateral, dlogh, feet = slopes
+    sig = lambda z: float(1.0 / (1.0 + math.exp(-z)))
+    approach = dlogh / DIR_APPROACH_UNITS[0] + feet / DIR_APPROACH_UNITS[1]
+    return {"act_right": sig((lateral - DIR_LATERAL_MID) / DIR_LATERAL_SCALE),
+            "act_left": sig((-lateral - DIR_LATERAL_MID) / DIR_LATERAL_SCALE),
+            "act_toward": sig((approach - DIR_APPROACH_MID) / DIR_APPROACH_SCALE),
+            "act_away": sig((-approach - DIR_APPROACH_MID) / DIR_APPROACH_SCALE)}
+
+
 def action_probs(speeds: np.ndarray, sit_pose: Optional[float]) -> Dict[str, float]:
     """
     act_* probabilities of a track from the soft fraction of its windows in each speed band. Standing and running
@@ -418,6 +534,51 @@ def _color_match(dist: Optional[Dict[str, float]], wanted: List[str]) -> Optiona
     return min(1.0, best)
 
 
+def _object_fit(kind: str, o: List[float], p: List[int]) -> Optional[float]:
+    """
+    How well object box o belongs to person box p (higher is better), or None when it cannot be theirs. Bags must lie
+    mostly inside the person's box below the head; a suitcase stands beside or in front of the legs with its bottom
+    near the feet. The score is 1 - the horizontal gap in body heights, so the nearest person wins.
+    """
+    ox1, oy1, ox2, oy2 = o
+    px1, py1, px2, py2 = p
+    h = py2 - py1
+    if h <= 0:
+        return None
+    gap = max(px1 - ox2, ox1 - px2, 0.0) / h
+    if kind == "handbag":
+        inter = max(0.0, min(ox2, px2) - max(ox1, px1)) * max(0.0, min(oy2, py2) - max(oy1, py1))
+        inside = inter / max(1e-6, (ox2 - ox1) * (oy2 - oy1))
+        return 1.0 - gap if inside >= 0.5 and py1 + 0.1 * h <= (oy1 + oy2) / 2 <= py2 else None
+    if kind == "suitcase":
+        ok = (gap <= 0.4 and (oy1 + oy2) / 2 >= py1 + 0.45 * h and py1 + 0.7 * h <= oy2 <= py2 + 0.2 * h)
+        return 1.0 - gap if ok else None
+    return None
+
+
+def object_fractions(tracks: Dict[int, "Track"],
+                     objects: Dict[int, List[Tuple[str, float, List[float]]]]) -> Dict[int, Dict[str, float]]:
+    """Per track and object kind, the fraction of the track's frames in which such an object was given to it."""
+    frames: Dict[Tuple[int, str], set] = {}
+    for f, olist in objects.items():
+        visible = [(tid, t.boxes[f]) for tid, t in tracks.items() if f in t.boxes]
+        if not visible:
+            continue
+        for kind, _, box in olist:
+            fits = [(score, tid) for tid, b in visible if (score := _object_fit(kind, box, b)) is not None]
+            if fits:
+                frames.setdefault((max(fits)[1], kind), set()).add(f)
+    out: Dict[int, Dict[str, float]] = {}
+    for (tid, kind), fs in frames.items():
+        out.setdefault(tid, {})[kind] = len(fs) / max(1, len(tracks[tid].boxes))
+    return out
+
+
+def object_p(kind: str, frac: float) -> float:
+    """Probability that a track has the object, from the fraction of its frames with it."""
+    return float(1.0 / (1.0 + math.exp(-(frac - OBJECT_FRAC_MID[kind]) / OBJECT_FRAC_SCALE)))
+
+
 def constraint_p(track: "Track", c: Dict[str, Any]) -> Optional[float]:
     """Probability that the track satisfies one query constraint (None when the track has no such information)."""
     key, val = c["key"], c["value"]
@@ -427,7 +588,20 @@ def constraint_p(track: "Track", c: Dict[str, Any]) -> Optional[float]:
     if key in ("top_color", "bottom_color"):
         return _color_match(track.attrs.get(key), val)
     p = track.attrs.get(key)
+    if p is None and key == "shorts" and "longpants" in track.attrs:   # without the PA-100K model
+        p = 1.0 - track.attrs["longpants"]
     return None if p is None else (p if val else 1.0 - p)
+
+
+def par_attrs(p: np.ndarray, old: Dict[str, Any]) -> Dict[str, float]:
+    """Track attributes from the mean PA-100K scores p [26]; old: the crossroad-0230 attributes (may be empty)."""
+    g = lambda k: float(p[PAR_INDEX[k]])
+    out = {"male": 1.0 - g("female"), "hat": g("hat"), "longpants": g("longpants"), "shorts": g("shorts"),
+           "skirt": g("skirt"), "longcoat": g("longcoat"), "bag": max(g("handbag"), g("shoulderbag")),
+           "backpack": g("backpack")}
+    if "backpack" in old:          # the two models disagree on different people; their mean ranks best
+        out["backpack"] = 0.5 * (out["backpack"] + float(old["backpack"]))
+    return out
 
 
 @dataclass
@@ -637,6 +811,9 @@ class SearchEngine:
             yolo_path = self.root / "yolov8n.pt"
             self.detector = YOLO(str(yolo_path) if yolo_path.exists() else "yolov8n.pt")
             self.detector_backend = "yolo"
+            # Registered before the first track() call, so it runs ahead of ultralytics' tracker callback
+            self._objects_sink: Optional[List[List[Tuple[str, float, List[float]]]]] = None
+            self.detector.add_callback("on_predict_postprocess_end", self._split_objects)
             print("[+] Person detector: Ultralytics YOLOv8n")
             return
         except Exception as e:
@@ -706,7 +883,7 @@ class SearchEngine:
 
     def _init_attr_model(self) -> None:
         """OpenVINO pedestrian-attribute and re-ID models, pose model for garment regions. All optional."""
-        self.attr_model = self.reid_model = self.pose_model = None
+        self.attr_model = self.reid_model = self.pose_model = self.par_model = None
         try:
             import openvino  # noqa: F401
         except ImportError:
@@ -726,12 +903,43 @@ class SearchEngine:
             print(f"[!] Attribute model unavailable ({e}): gender/attribute recognition disabled.")
             self.attr_model = None
             return
+        self._init_par_model()
         try:
             from ultralytics import YOLO
             self.pose_model = YOLO(str(self.checkpoints_dir / POSE_MODEL))
             print(f"[+] Pose model: {POSE_MODEL} (garment colour regions)")
         except Exception as e:
             print(f"[!] Pose model unavailable ({e}): colours fall back to the attribute model's colour points.")
+
+    def _init_par_model(self) -> None:
+        """PA-100K attribute model (PAR_URL), downloaded once to checkpoints/attributes/PAR_DIR. Optional."""
+        try:
+            import openvino as ov
+            model_file = self.checkpoints_dir / "attributes" / PAR_DIR / "inference.pdmodel"
+            if not model_file.exists():
+                import tarfile
+                import urllib.request
+                print(f"[*] Downloading the PA-100K attribute model (~7 MB)...")
+                model_file.parent.parent.mkdir(parents=True, exist_ok=True)
+                tmp = model_file.parent.parent / "person_attribute_infer.tar.part"
+                urllib.request.urlretrieve(PAR_URL, tmp)
+                with tarfile.open(tmp) as tar:
+                    tar.extractall(model_file.parent.parent, filter="data")
+                tmp.unlink()
+            core = ov.Core()
+            device = "GPU" if "GPU" in core.available_devices else "CPU"
+            self.par_model = core.compile_model(core.read_model(str(model_file)), device)
+            print(f"[+] PA-100K attribute model: PULC person_attribute on {device}")
+        except Exception as e:
+            print(f"[!] PA-100K attribute model unavailable ({e}): attributes come from {ATTR_MODEL} only.")
+            self.par_model = None
+
+    def _par_probs(self, crops: List[np.ndarray]) -> np.ndarray:
+        """[N, 26] PA-100K scores of BGR crops."""
+        x = np.stack([((cv2.resize(c, (192, 256))[:, :, ::-1].astype(np.float32) / 255.0 - PAR_MEAN) / PAR_STD)
+                      .transpose(2, 0, 1) for c in crops])
+        with self.model_lock:
+            return self.par_model([x])[self.par_model.output(0)]
 
     def _embed_reid(self, crops: List[np.ndarray]) -> np.ndarray:
         """[N, 256] L2-normalised re-ID embeddings of BGR crops."""
@@ -838,7 +1046,7 @@ class SearchEngine:
         Per track, over its preview crops (least-occluded frames): averages the 8 attribute probabilities and
         builds top/bottom garment colour distributions from pose-located regions.
         """
-        if self.attr_model is None:
+        if self.attr_model is None and self.par_model is None:
             return
         for tid in tids:
             t = analysis.tracks[tid]
@@ -850,6 +1058,8 @@ class SearchEngine:
             for img, kp in zip(crops, self._pose_keypoints(crops)):
                 if (sp := _sit_score(kp)) is not None:
                     sits.append(sp)
+                if self.attr_model is None:      # colours need its colour points when there is no pose
+                    continue
                 x = cv2.resize(img, (80, 160)).transpose(2, 0, 1)[None].astype(np.float32)  # BGR, NCHW, 0..255
                 res = self.attr_model([x])
                 probs.append(res[self.attr_output].reshape(-1))
@@ -859,7 +1069,9 @@ class SearchEngine:
                     hist = _color_hist(img[r[1]:r[3], r[0]:r[2]]) if r else None
                     if hist is not None:
                         hists[key].append(hist)
-            t.attrs = {k: float(v) for k, v in zip(ATTR_NAMES, np.mean(probs, axis=0))}
+            t.attrs = {k: float(v) for k, v in zip(ATTR_NAMES, np.mean(probs, axis=0))} if probs else {}
+            if self.par_model is not None:
+                t.attrs.update(par_attrs(self._par_probs(crops).mean(axis=0), t.attrs))
             for key, hs in hists.items():
                 if hs:
                     t.attrs[key] = {c: round(float(v), 4) for c, v in zip(COLOR_NAMES, np.mean(hs, axis=0))}
@@ -874,6 +1086,26 @@ class SearchEngine:
             if len(speeds):
                 t.attrs["speed"] = float(np.median(speeds))
                 t.attrs.update(action_probs(speeds, t.attrs.get("sit_pose")))
+            if (slopes := track_direction(t.boxes, analysis.fps, analysis.width, analysis.height)) is not None:
+                t.attrs["dir_slopes"] = [round(v, 4) for v in slopes]
+                t.attrs.update(direction_probs(slopes))
+
+    @staticmethod
+    def _objects(analysis: Analysis, objects: Dict[int, List[Tuple[str, float, List[float]]]]) -> None:
+        """
+        obj_<kind> fractions and the suitcase probability per track; the bag probability becomes the mean of the
+        attribute model and the detector's handbags (each missed bags the other saw).
+        """
+        fractions = object_fractions(analysis.tracks, objects)
+        for tid, t in analysis.tracks.items():
+            fr = fractions.get(tid, {})
+            for kind in OBJECT_CLASSES.values():
+                t.attrs[f"obj_{kind}"] = round(fr.get(kind, 0.0), 4)
+            t.attrs["suitcase"] = object_p("suitcase", fr.get("suitcase", 0.0))
+            handbag = object_p("handbag", fr.get("handbag", 0.0))
+            if "bag" in t.attrs:
+                t.attrs["bag_attr"] = t.attrs["bag"]
+                t.attrs["bag"] = 0.5 * (t.attrs["bag"] + handbag)
 
     # ------------------------------------------------------------------ analysis
     def analyze(self, video_path: Path, video_id: str, analysis_id: str, params: Dict[str, Any],
@@ -891,8 +1123,9 @@ class SearchEngine:
         conf = float(params.get("conf", 0.35))
 
         # Pass 1: detect + track. Only boxes and per-detection quality are kept, never frames.
+        objects = None   # OBJECT_CLASSES boxes per frame (YOLO only)
         if self.detector_backend == "yolo":
-            raw, frames_processed = self._track_botsort(cap, n_frames, stride, conf, fps, progress)
+            raw, frames_processed, objects = self._track_botsort(cap, n_frames, stride, conf, fps, progress)
         else:
             raw, frames_processed = self._track_greedy(cap, n_frames, stride, conf, progress)
         cap.release()
@@ -946,6 +1179,8 @@ class SearchEngine:
                 self.encode_tracks(analysis, progress=progress)
                 self._stitch(video_path, analysis, progress)
             self._actions(analysis)   # after stitching: merged tracks have their final boxes
+            if objects is not None:
+                self._objects(analysis, objects)
         return analysis
 
     @staticmethod
@@ -991,9 +1226,36 @@ class SearchEngine:
                     next_id += 1
         return out
 
-    def _track_botsort(self, cap, n_frames: int, stride: int, conf: float, fps: float,
-                       progress: ProgressCb) -> Tuple[Dict[int, Dict[str, Any]], int]:
-        """YOLO + BoT-SORT: Kalman motion, two-stage (high/low score) Hungarian matching, native ReID."""
+    def _split_objects(self, predictor) -> None:
+        """
+        Detector callback that runs before ultralytics' tracker callback: moves the frame's OBJECT_CLASSES boxes into
+        self._objects_sink, so BoT-SORT only sees people. The person boxes are the same as in a person-only run,
+        because NMS gives each box its best class before the class filter and runs per class.
+        """
+        sink = self._objects_sink
+        if sink is None:
+            return
+        for r in predictor.results:
+            b = r.boxes
+            if b is None or not len(b):
+                sink.append([])
+                continue
+            person = b.cls == 0
+            other = ~person
+            sink.append([(OBJECT_CLASSES[int(c)], float(sc), [float(v) for v in xy])
+                         for xy, c, sc in zip(b.xyxy[other].tolist(), b.cls[other].tolist(), b.conf[other].tolist())
+                         if sc >= OBJECT_MIN_CONF and int(c) in OBJECT_CLASSES])
+            r.boxes = b[person]
+            feats = getattr(r, "feats", None)      # per-detection ReID features, aligned with the boxes
+            if isinstance(feats, torch.Tensor) and len(feats) == len(person):
+                r.feats = feats[person]
+
+    def _track_botsort(self, cap, n_frames: int, stride: int, conf: float, fps: float, progress: ProgressCb
+                       ) -> Tuple[Dict[int, Dict[str, Any]], int, Dict[int, List[Tuple[str, float, List[float]]]]]:
+        """
+        YOLO + BoT-SORT: Kalman motion, two-stage (high/low score) Hungarian matching, native ReID. Also returns the
+        OBJECT_CLASSES boxes per processed frame, from the same detector pass.
+        """
         cfg = (
             "tracker_type: botsort\n"
             f"track_high_thresh: {conf}\n"
@@ -1014,8 +1276,10 @@ class SearchEngine:
             f.write(cfg)
 
         tracks: Dict[int, Dict[str, Any]] = {}
+        objects: Dict[int, List[Tuple[str, float, List[float]]]] = {}
         idx, first = 0, True
         sample_every = max(stride, int(round(REID_SAMPLE_S * fps)))
+        self._objects_sink = sink = []
         try:
             while idx < n_frames:
                 ok, frame = cap.read()
@@ -1024,8 +1288,11 @@ class SearchEngine:
                 if idx % stride == 0:
                     res = self.detector.track(frame, persist=not first, tracker=cfg_path, conf=DETECT_CONF_LOW,
                                               imgsz=DETECT_IMGSZ if stride == 1 else DETECT_IMGSZ_FAST,
-                                              classes=[0], verbose=False)[0]
+                                              classes=[0, *OBJECT_CLASSES], verbose=False)[0]
                     first = False
+                    if sink:
+                        objects[idx] = sink.pop()
+                        sink.clear()
                     b = res.boxes
                     if b is not None and b.id is not None and len(b):
                         xyxy = b.xyxy.cpu().numpy()
@@ -1052,8 +1319,9 @@ class SearchEngine:
                 if idx % 5 == 0 or idx == n_frames:
                     progress("detect", idx, n_frames)
         finally:
+            self._objects_sink = None
             os.unlink(cfg_path)
-        return tracks, idx
+        return tracks, idx, objects
 
     def _track_greedy(self, cap, n_frames: int, stride: int, conf: float,
                       progress: ProgressCb) -> Tuple[Dict[int, Dict[str, Any]], int]:
@@ -1318,7 +1586,7 @@ class SearchEngine:
             "q_mot": concepts["q_mot"],
             "app_keywords": concepts["app_keywords"],
             "mot_keywords": concepts["mot_keywords"],
-            "constraints": query_attributes(prompt, with_attrs=self.attr_model is not None),
+            "constraints": query_attributes(prompt, with_attrs=self.attr_model is not None or self.par_model is not None),
             "scores": [],
         }
         if not analysis.tracks:

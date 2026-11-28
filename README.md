@@ -244,18 +244,19 @@ Tải video ─► Proxy H.264 720p ─► [Phân tích, 1 lần] ─► chỉ m
 | ① Phát hiện + theo vết | YOLOv8n (960px) + BoT-SORT | Bám từng người qua mọi frame; mỗi 0,25 s lấy một mẫu re-ID |
 | ② Tách track sai | OpenVINO re-ID `0277` | Cắt track khi khung nhảy sang người khác |
 | ③ Cắt ảnh | | 20 khung cho mỗi người theo layout `mfgf`, ưu tiên khung ít bị che |
-| ④ Thuộc tính | OpenVINO attributes + YOLOv8n-pose | Giới tính, túi, balo, mũ, tóc dài; màu áo và quần; tư thế ngồi |
+| ④ Thuộc tính | PA-100K (PaddleClas PULC) + OpenVINO attributes + YOLOv8n-pose | Giới tính, mũ, balo, túi, quần dài, quần ngắn, váy/đầm, áo khoác dài, tóc dài; màu áo và quần; tư thế ngồi |
+| ④b Đồ vật đi cùng | YOLOv8n (cùng lượt với bước ①) | Vali và túi xách được gắn vào người gần nhất ở từng khung; tỉ lệ thời gian đi cùng → xác suất "có vali", "xách túi" |
 | ⑤ Nối track | Re-ID | Nối hai đoạn của cùng một người sau khi bị che, tối đa 8 s |
 | ⑥ CLIP | CLIP ViT-B/16 | Embedding ảnh cho nhánh CLIP ẩn |
 | ⑦ Mã hóa | **SpaceTime-DSCA (m3c)** | Tạo $V_{app}$, $V_{mot}$, $V_{video}$ cho từng người |
-| ⑧ Hành động | | Đứng / đi / chạy tính từ tốc độ khung; ngồi tính từ tư thế |
+| ⑧ Hành động | | Đứng / đi / chạy tính từ tốc độ khung; ngồi tính từ tư thế; hướng đi (trái/phải, về phía/ra xa camera) từ quỹ đạo khung |
 
 Bước ⑤ chạy trước ⑥ và ⑦, nên mỗi người chỉ được mã hóa một lần.
 
 **Tìm kiếm:** câu truy vấn được tách bằng DSCA và mã hóa bằng BERT, rồi tính điểm cuối:
 $$\text{điểm} = \frac{0{,}45\cos(T_{full},V_{video}) + 0{,}45\cos(T_{app},V_{app}) + 0{,}09\cos(T_{mot},V_{mot}) + 0{,}2\,\text{CLIP}}{1{,}2} - \text{phạt thuộc tính}$$
 - Ba trọng số DSCA được chuẩn hoá để cộng lại bằng 1.
-- *Phạt thuộc tính* là $\sum w\,(1-p)$, lấy từ các ràng buộc đọc ra trong câu (giới tính, màu áo/quần, túi, balo, mũ, hành động) so với thuộc tính đã đo.
+- *Phạt thuộc tính* là $\sum w\,(1-p)$, lấy từ các ràng buộc đọc ra trong câu (màu quần, túi, balo, mũ, quần dài/ngắn, váy, áo khoác dài, vali, hành động, hướng đi) so với thuộc tính đã đo. Giới tính và màu áo vẫn được nhận diện và hiện trên giao diện nhưng không tính vào điểm: đo trên TVPReid và video thật, DSCA + CLIP đã xử lý tốt hai thứ này, thêm ràng buộc chỉ làm giảm độ chính xác.
 - Nhánh CLIP và phần thuộc tính chỉ có trong demo, **không** dùng cho số liệu bài báo.
 - Trên hai video tự gán nhãn (24 câu), CLIP đưa số câu đúng ở hạng 1 từ 7/9 lên 8/9 và từ 12/15 lên 15/15.
 

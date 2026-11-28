@@ -482,6 +482,11 @@ Server đăng nhập GHCR bằng token tạm của chính job, nên image để 
   - App không trả lời trong 5 phút thì workflow báo lỗi kèm log, và server tự chạy lại image trước đó.
   - Push lúc máy đang tắt thì job deploy báo lỗi; bật máy rồi bấm *Re-run failed jobs*.
 - **Mất dữ liệu khi khởi động lại:** video đã upload và kết quả phân tích bị xoá mỗi lần container khởi động lại. Đây là thiết kế hiện tại của app.
+- **Model mới thêm sau khi đã cài máy:** `checkpoints/` trên server chỉ đọc với app, nên model mới phải tải bằng tay. Model thuộc tính PA-100K (thêm ngày 28/11/2026; thiếu nó app vẫn chạy với model cũ):
+  ```bash
+  cd ~/pblcv/checkpoints/attributes && curl -fL -o par.tar https://paddleclas.bj.bcebos.com/models/PULC/inference/person_attribute_infer.tar && tar -xf par.tar && rm par.tar
+  cd ~/pblcv/deploy && docker compose restart app
+  ```
 - **Xem log và các lệnh quản trị khác:** xem mục *Truy cập EC2 bằng SSH* ở đầu mục 6.
 - **Đổi hoặc quên mật khẩu:** SSH vào EC2 rồi chạy đoạn dưới. Mật khẩu mới gõ vào sẽ không hiện lên.
   ```bash
