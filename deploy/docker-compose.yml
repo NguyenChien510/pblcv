@@ -1,5 +1,6 @@
-# Web demo behind Caddy (HTTPS + shared password). Run from this folder:  docker compose up -d --build
+# Web demo behind Caddy (HTTPS). Run from this folder:  docker compose up -d --build
 # Model files stay on the host (../checkpoints, ../yolov8n.pt) and are mounted read-only.
+# The app reads its settings from .env (configure-app.sh): Supabase gallery and the /admin password.
 services:
   app:
     build:
@@ -9,9 +10,13 @@ services:
     # .github/workflows/deploy.yml, which deploy/remote-deploy.sh pulls and starts with --no-build.
     image: ${APP_IMAGE:-pblcv-webdemo:latest}
     restart: unless-stopped
+    env_file: .env                 # SUPABASE_URL, SUPABASE_SECRET_KEY, ADMIN_PASSWORD_HASH
+    environment:
+      TRUST_PROXY: "1"             # only Caddy reaches the app port, so X-Forwarded-For is the visitor's IP
     volumes:
       - ../checkpoints:/app/checkpoints:ro
       - ../yolov8n.pt:/app/yolov8n.pt:ro
+      - app_cache:/app/uploads     # local copies of gallery videos survive restarts and deploys
     expose:
       - "8000"
 
@@ -30,5 +35,6 @@ services:
       - caddy_config:/config
 
 volumes:
+  app_cache:
   caddy_data:
   caddy_config:

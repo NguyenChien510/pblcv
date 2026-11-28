@@ -21,6 +21,8 @@ docker pull --quiet "$IMAGE"
 
 set_image "$IMAGE"
 docker compose up -d --no-build --remove-orphans
+# the Caddyfile is a bind mount: a changed file is not picked up by the running container on its own
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || docker compose restart caddy
 
 # The app loads BERT, CLIP and the checkpoint before it answers (about a minute on 2 vCPU).
 for i in $(seq 1 60); do

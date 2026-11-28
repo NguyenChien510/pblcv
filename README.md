@@ -227,7 +227,7 @@ python test.py --sub_dataset TVPReid-PRID --dashboard                     # vẽ
 ```bash
 python web_demo.py --port 8000
 ```
-Bản đang chạy: **https://findperson.duckdns.org**. Cần đăng nhập, và chỉ vào được khi máy EC2 đang bật.
+Bản đang chạy: **https://findperson.duckdns.org**: không cần đăng nhập, chỉ vào được khi máy EC2 đang bật. Trang quản trị ở `/admin`, có mật khẩu, dùng để xem hệ thống, IP, hàng đợi và thư viện video. Video đã phân tích được lưu vào thư viện chung trên Supabase, chọn lại là có kết quả ngay.
 
 Web demo gồm hai bước:
 1. **Phân tích:** chạy một lần cho mỗi video, tốn thời gian.
@@ -286,7 +286,7 @@ git push ─► GitHub Actions: build image ─► ghcr.io/nguyenchien510/pblcv-
                          └─► SSH vào EC2 ─► pull, chạy lại, chờ app trả lời (lỗi thì quay về bản trước)
 ```
 
-- **Server:** AWS EC2 `c7i.4xlarge` (16 vCPU, 32 GB) ở Singapore, sau Caddy (HTTPS tự động và mật khẩu chung).
+- **Server:** AWS EC2 `c7i.4xlarge` (16 vCPU, 32 GB) ở Singapore, sau Caddy (HTTPS tự động); thư viện video trên Supabase; quản trị ở `/admin`.
 - **Tên miền:** DuckDNS miễn phí, tự trỏ về IP mới mỗi lần bật máy.
 - **Hướng dẫn:**
   - từng bước, gồm cả truy cập SSH: [INSTALL.md](INSTALL.md) mục 6;

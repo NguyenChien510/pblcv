@@ -3,11 +3,12 @@
 # Run it on the instance as the default user:
 #   curl -fsSL https://raw.githubusercontent.com/NguyenChien510/pblcv/main/deploy/ec2-setup.sh -o ec2-setup.sh
 #   bash ec2-setup.sh <name>.duckdns.org      # or your own domain; no argument = <public-ip>.sslip.io
-# It asks for the demo password and, for a DuckDNS name, the DuckDNS token (neither is echoed or put on a
-# command line). DEMO_PASSWORD / DUCKDNS_TOKEN in the environment skip the prompts.
+# For a DuckDNS name it asks for the DuckDNS token (not echoed, never on a command line; DUCKDNS_TOKEN in the
+# environment skips the prompt). At the end deploy/configure-app.sh asks for the Supabase gallery settings and the
+# /admin password (users need no login; only /admin has a password).
 # Steps: Docker, 4 GB swap, repo clone, model files (~960 MB), DuckDNS updater (boot + every 5 min, so the name
 # follows the new public IP after each stop/start), deploy/.env for Caddy, and the SSH key GitHub Actions deploys
-# with. Re-running is safe (finished steps are skipped); run it again to change the password.
+# with. Re-running is safe (finished steps are skipped); to change only the app settings run deploy/configure-app.sh.
 # The app itself is started by the first CI/CD run (GitHub -> Actions -> "Build and deploy web demo" -> Run workflow).
 set -euo pipefail
 
@@ -21,10 +22,6 @@ imds() {   # EC2 instance metadata (IMDSv2)
   curl -fsS -H "X-aws-ec2-metadata-token: $tok" "http://169.254.169.254/latest/meta-data/$1"
 }
 
-if [ -z "${DEMO_PASSWORD:-}" ]; then
-  read -rsp "Password for the demo login 'demo': " DEMO_PASSWORD; echo
-fi
-[ -n "$DEMO_PASSWORD" ] || { echo "The password must not be empty."; exit 1; }
 case "$DOMAIN" in
   *.duckdns.org)
     if [ -z "${DUCKDNS_TOKEN:-}" ]; then
@@ -129,22 +126,22 @@ EOF
   sudo journalctl -u duckdns.service -n 1 --no-pager -o cat
 fi
 
-echo "== deploy/.env (domain + shared login)"
+echo "== deploy/.env (domain)"
 if [ -z "$DOMAIN" ]; then
   DOMAIN="$(imds public-ipv4).sslip.io"
 fi
-hash=$(sudo docker run --rm caddy:2 caddy hash-password --plaintext "$DEMO_PASSWORD")
 env_file="$DIR/deploy/.env"
 keep=$(grep -E '^APP_IMAGE=' "$env_file" 2>/dev/null || true)   # keep the deployed image on a re-run
 cat > "$env_file" <<EOF
 DOMAIN=$DOMAIN
 HTTP_PORT=80
 HTTPS_PORT=443
-AUTH_USER=demo
-AUTH_HASH='$hash'
 EOF
 [ -n "$keep" ] && echo "$keep" >> "$env_file"
 chmod 600 "$env_file"
+
+echo "== App settings: Supabase gallery and the /admin password"
+bash "$DIR/deploy/configure-app.sh"
 
 echo "== SSH key for GitHub Actions"
 key="$HOME/.ssh/github_deploy"
@@ -160,7 +157,7 @@ esac
 cat <<EOF
 
 =====================================================================
- Done. Site (after the first deploy): https://$DOMAIN   login: demo
+ Done. Site (after the first deploy): https://$DOMAIN   (no login)   admin: https://$DOMAIN/admin
 =====================================================================
 In GitHub: repo Settings -> Secrets and variables -> Actions
   Variables tab: EC2_HOST = $host   ($host_note)

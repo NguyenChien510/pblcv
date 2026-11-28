@@ -1,0 +1,31 @@
+# Supabase pauses Free-plan projects after a week without activity; a paused project means no gallery for the web
+# demo until someone presses Restore in the dashboard. This runs one tiny query a day, also while the EC2 host is off.
+# Setup (GitHub -> Settings -> Secrets and variables -> Actions): variable SUPABASE_URL (https://<ref>.supabase.co)
+# and secret SUPABASE_SECRET_KEY (sb_secret_...). Without them the job does nothing.
+# Note: GitHub turns scheduled workflows off after 60 days without commits; re-enable it in the Actions tab then.
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: "17 3 * * *"        # daily, 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: vars.SUPABASE_URL != ''
+    steps:
+      - name: Query the gallery database
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          url="${SUPABASE_URL%/}"; url="${url%/rest/v1}"
+          # key via curl's config on stdin, not on the command line
+          code=$(printf 'header = "apikey: %s"\n' "$SUPABASE_KEY" \
+                 | curl -s -o /dev/null -w '%{http_code}' --retry 3 -K - "$url/rest/v1/app_settings?select=key&limit=1")
+          echo "Supabase answered HTTP $code"
+          [ "$code" = "200" ]

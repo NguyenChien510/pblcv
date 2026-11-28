@@ -39,7 +39,7 @@ python test.py --sub_dataset TVPReid-PRID --query "A man in a dark grey jacket w
 # Web demo (FastAPI + static UI); settings from .env (Supabase gallery, admin password), see webapp section
 python web_demo.py --port 8000 --no-browser
 
-# Deploy (Docker + Caddy basic auth; model weights are mounted from ./checkpoints, not baked in). See INSTALL.md
+# Deploy (Docker + Caddy for HTTPS, no user login; model weights are mounted from ./checkpoints, not baked in). See INSTALL.md
 # sections 4 (VPS) and 5 (Compute Engine L4). GPU: add -f docker-compose.gpu.yml (CUDA torch via TORCH_INDEX=cu126).
 cd deploy && cp .env.example .env && docker compose up -d --build
 # AWS EC2 + CI/CD (INSTALL.md section 6): .github/workflows/deploy.yml builds the image on every push to main that
@@ -48,6 +48,10 @@ cd deploy && cp .env.example .env && docker compose up -d --build
 # back to the previous image on failure. deploy/ec2-setup.sh <name>.duckdns.org prepares a fresh Ubuntu instance
 # (Docker, swap, model files, a systemd timer that points the DuckDNS name at the current public IP at boot and every
 # 5 min, .env, deploy key). Target: c7i.4xlarge (Paid plan + 16-vCPU quota). Without EC2_HOST the deploy job is skipped.
+# App settings live in deploy/.env (docker-compose passes it to the app with TRUST_PROXY=1): deploy/configure-app.sh asks
+# for SUPABASE_URL, SUPABASE_SECRET_KEY and the /admin password (scrypt hash) and restarts the app; ec2-setup.sh calls it.
+# remote-deploy.sh reloads Caddy after `up` (the Caddyfile is a bind mount). .github/workflows/supabase-keepalive.yml
+# queries Supabase daily (vars.SUPABASE_URL, secret SUPABASE_SECRET_KEY) so the Free project is not paused.
 ```
 
 If there are no captions under the data root, `TVPRDataset` silently builds a dummy index (32 train / 16 val samples). That is fine for a smoke test, but if metrics look meaningless, check this first.

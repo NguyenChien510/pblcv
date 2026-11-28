@@ -123,7 +123,7 @@ python experiments/run_revision.py --stage eval --recipe m3 --grid_step 0.1
 
 ---
 
-## 4. Deploy lên VPS (Docker + Caddy, có mật khẩu)
+## 4. Deploy lên VPS (Docker + Caddy)
 
 Yêu cầu VPS:
 - Ubuntu 22.04/24.04;
@@ -148,22 +148,22 @@ curl -L -o checkpoints/best.pth https://github.com/NguyenChien510/pblcv/releases
 rsync -avP checkpoints/yolov8n-pose.pt checkpoints/reid checkpoints/attributes user@VPS:~/pblcv/checkpoints/
 rsync -avP yolov8n.pt user@VPS:~/pblcv/
 
-# 3. Trên VPS: tạo mật khẩu và cấu hình
+# 3. Trên VPS: cấu hình (tên miền; gallery Supabase và mật khẩu /admin, xem mục 6H)
 cd deploy
 cp .env.example .env
-docker run --rm caddy:2 caddy hash-password --plaintext 'mat-khau-cua-ban'   # dán kết quả vào AUTH_HASH
-nano .env                                                                    # DOMAIN, AUTH_USER, AUTH_HASH
+nano .env                         # DOMAIN
+bash configure-app.sh             # hỏi Supabase URL + secret key (bỏ trống = không có gallery) và mật khẩu /admin
 
 # 4. Chạy
 docker compose up -d --build
 docker compose logs -f app        # chờ dòng "SpaceTime-DSCA Person Search"
 ```
 
-Mở `https://<DOMAIN>`; trình duyệt sẽ hỏi tài khoản `AUTH_USER` và mật khẩu đã tạo ở bước 3.
+Mở `https://<DOMAIN>`: người dùng không cần đăng nhập. Trang quản trị ở `https://<DOMAIN>/admin`, mật khẩu đã đặt ở bước 3.
 
 - **Cập nhật code:** `git pull && docker compose up -d --build`.
 - **Dừng:** `docker compose down`.
-- Mỗi lần container khởi động lại, video đã upload và kết quả phân tích bị xóa.
+- Có gallery Supabase thì video đã phân tích được giữ lại và mở lại ngay; không có thì mỗi lần container khởi động lại, video và kết quả phân tích bị xóa.
 - Phân tích chạy tuần tự trên một worker: nếu hai người phân tích cùng lúc, người sau phải chờ.
 - **Thử trên máy local không cần HTTPS:** trong `.env` đặt `DOMAIN=:80` và `HTTP_PORT=8080`, rồi mở `http://localhost:8080`.
 
@@ -256,19 +256,19 @@ gcloud compute scp yolov8n.pt pblcv-gpu:~/pblcv/
 
 Phải có đủ các file này **trước** bước E: `checkpoints/` được mount read-only, và nếu thiếu `yolov8n.pt` thì Docker tạo một thư mục trùng tên làm app lỗi.
 
-### E. Mật khẩu và chạy (trên VM)
+### E. Cấu hình và chạy (trên VM)
 
 ```bash
 cd ~/pblcv/deploy
 cp .env.example .env
-docker run --rm caddy:2 caddy hash-password --plaintext 'mat-khau-moi'
-nano .env      # DOMAIN=<IP-tĩnh>.sslip.io   AUTH_USER=...   AUTH_HASH='<kết quả lệnh trên>' (giữ dấu nháy đơn)
+nano .env                  # DOMAIN=<IP-tĩnh>.sslip.io
+bash configure-app.sh      # gallery Supabase (tuỳ chọn) và mật khẩu /admin, xem mục 6H
 
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build   # lần đầu build khoảng 10-15 phút
 docker compose logs -f app     # chờ "Device : CUDA" và "Checkpoint : best.pth"
 ```
 
-Mở `https://<IP-tĩnh>.sslip.io` và đăng nhập. Góc trên giao diện phải hiện **CUDA · YOLOv8n**. Nếu hiện CPU: thiếu `-f docker-compose.gpu.yml`, hoặc phần C chưa xong.
+Mở `https://<IP-tĩnh>.sslip.io` (không cần đăng nhập; quản trị ở `/admin`). Góc trên giao diện phải hiện **CUDA · YOLOv8n**. Nếu hiện CPU: thiếu `-f docker-compose.gpu.yml`, hoặc phần C chưa xong.
 
 **Kiểm tra:** upload `TESTVIDEO.mp4`, phân tích rồi tìm vài câu mô tả. Trên CPU, video này cho 18 người và mất khoảng 3 phút; trên L4 sẽ nhanh hơn nhiều. Thứ hạng có thể lệch nhẹ so với CPU do khác phần cứng.
 
@@ -301,7 +301,8 @@ Kiểm tra lại trong Billing → Reports rằng chi phí đã về 0.
 ## 6. Deploy lên AWS EC2 (c7i.4xlarge) + tên miền DuckDNS + CI/CD từ GitHub
 
 Web đang chạy: **https://findperson.duckdns.org**
-- Tài khoản `demo`; mật khẩu là mật khẩu đã nhập khi chạy `ec2-setup.sh`. Mật khẩu không ghi trong repo vì repo public; quên thì đổi theo mục F.
+- Người dùng không cần đăng nhập. Trang quản trị: **https://findperson.duckdns.org/admin**. Ở đó xem được CPU/RAM, job và IP đang dùng, hàng đợi, thư viện video và nhật ký. Mật khẩu admin đặt bằng `deploy/configure-app.sh` (mục H) và không ghi trong repo vì repo public.
+- Video đã phân tích được lưu vào thư viện chung trên Supabase (mục H). Chọn lại trong thư viện là có kết quả ngay, không phải phân tích lại.
 - Chỉ truy cập được khi máy EC2 đang bật.
 
 ### Truy cập EC2 bằng SSH
@@ -444,12 +445,12 @@ curl -fsSL https://raw.githubusercontent.com/NguyenChien510/pblcv/main/deploy/ec
 bash ec2-setup.sh findperson.duckdns.org
 ```
 
-Script hỏi **mật khẩu demo** và **token DuckDNS**; cả hai không hiện lên màn hình. Mất khoảng 5 phút, và làm các việc sau:
+Script hỏi **token DuckDNS**, rồi ở cuối hỏi **Supabase URL + secret key** và **mật khẩu /admin** (`deploy/configure-app.sh`; key và mật khẩu không hiện lên màn hình). Làm mục H1 trước để có sẵn project Supabase, hoặc bỏ trống URL rồi cấu hình sau. Mất khoảng 5 phút, và làm các việc sau:
 - cài Docker và thêm 4 GB swap;
 - clone repo vào `~/pblcv`;
 - tải model (~960 MB): checkpoint `best.pth` từ release v2.0, YOLO, pose, re-ID và thuộc tính;
 - cài dịch vụ cập nhật DuckDNS: chạy lúc khởi động và mỗi 5 phút;
-- ghi `deploy/.env` với tên miền và tài khoản `demo`;
+- ghi `deploy/.env` với tên miền, cấu hình gallery và hash mật khẩu admin;
 - tạo SSH key riêng cho GitHub Actions.
 
 Cuối cùng script in ra giá trị cần điền vào GitHub và **private key**, rồi xoá private key khỏi server. Lỡ mất key thì chạy lại script để tạo key mới.
@@ -467,7 +468,7 @@ Cuối cùng script in ra giá trị cần điền vào GitHub và **private key
 2. **Chạy deploy:** tab **Actions** → *Build and deploy web demo* → **Run workflow**.
    - Job `build` dùng lại cache, nên nhanh.
    - Job `deploy` lần đầu phải kéo image vài GB về EC2, mất vài phút. Sau đó nó chờ app trả lời mới báo xanh.
-3. **Mở web:** vào `https://findperson.duckdns.org`, đăng nhập `demo` / mật khẩu đã đặt. Caddy tự xin chứng chỉ HTTPS ở lần truy cập đầu.
+3. **Mở web:** vào `https://findperson.duckdns.org` (không cần đăng nhập); trang quản trị ở `/admin`. Caddy tự xin chứng chỉ HTTPS ở lần truy cập đầu.
 
 Server đăng nhập GHCR bằng token tạm của chính job, nên image để private cũng kéo được, không cần làm gì thêm.
 
@@ -481,23 +482,14 @@ Server đăng nhập GHCR bằng token tạm của chính job, nên image để 
   - Workflow chỉ chạy khi commit sửa `webapp/`, `models/`, `data/`, `utils/`, `configs/`, `web_demo.py`, `requirements.txt`, `Dockerfile`, `deploy/` hoặc chính workflow. Sửa README hay bài báo thì không deploy.
   - App không trả lời trong 5 phút thì workflow báo lỗi kèm log, và server tự chạy lại image trước đó.
   - Push lúc máy đang tắt thì job deploy báo lỗi; bật máy rồi bấm *Re-run failed jobs*.
-- **Mất dữ liệu khi khởi động lại:** video đã upload và kết quả phân tích bị xoá mỗi lần container khởi động lại. Đây là thiết kế hiện tại của app.
+- **Dữ liệu khi khởi động lại:** có gallery Supabase thì video đã lưu vào thư viện và kết quả phân tích vẫn còn, bản sao trên đĩa nằm trong volume `app_cache`. Không cấu hình Supabase thì mọi thứ bị xoá mỗi lần container khởi động lại.
 - **Model mới thêm sau khi đã cài máy:** `checkpoints/` trên server chỉ đọc với app, nên model mới phải tải bằng tay. Model thuộc tính PA-100K (thêm ngày 28/11/2026; thiếu nó app vẫn chạy với model cũ):
   ```bash
   cd ~/pblcv/checkpoints/attributes && curl -fL -o par.tar https://paddleclas.bj.bcebos.com/models/PULC/inference/person_attribute_infer.tar && tar -xf par.tar && rm par.tar
   cd ~/pblcv/deploy && docker compose restart app
   ```
 - **Xem log và các lệnh quản trị khác:** xem mục *Truy cập EC2 bằng SSH* ở đầu mục 6.
-- **Đổi hoặc quên mật khẩu:** SSH vào EC2 rồi chạy đoạn dưới. Mật khẩu mới gõ vào sẽ không hiện lên.
-  ```bash
-  cd ~/pblcv/deploy
-  read -rsp "Mật khẩu mới: " P; echo
-  H=$(sudo docker run --rm caddy:2 caddy hash-password --plaintext "$P"); unset P
-  [ -n "$H" ] && sed -i "/^AUTH_HASH=/c\\AUTH_HASH='$H'" .env && sudo docker compose up -d --force-recreate caddy
-  ```
-  - Phải có `sudo` nếu chạy trong cùng phiên SSH vừa chạy `ec2-setup.sh`, vì quyền nhóm `docker` chỉ có hiệu lực từ lần đăng nhập sau.
-  - `[ -n "$H" ]` giữ nguyên file `.env` nếu không tạo được hash.
-  - Chạy lại `ec2-setup.sh` cũng đổi được mật khẩu, nhưng sẽ tạo thêm một SSH key thừa.
+- **Đổi mật khẩu admin hoặc cấu hình Supabase:** SSH vào EC2 rồi chạy `bash ~/pblcv/deploy/configure-app.sh`. Script hỏi lại mọi thứ (mật khẩu không hiện lên màn hình) và khởi động lại app. Đổi mật khẩu cũng làm được ngay trong `/admin`, tab *Bảo mật*.
 
 ### G. Theo dõi chi phí và dọn dẹp
 
@@ -509,3 +501,29 @@ Khi không dùng nữa:
 2. Xoá alarm trong CloudWatch.
 3. Xoá biến `EC2_HOST` trên GitHub để workflow chỉ build, không deploy nữa.
 4. Nếu muốn, xoá tên miền trên duckdns.org.
+
+### H. Thư viện video (Supabase) và trang /admin
+
+Gallery lưu proxy video và kết quả phân tích lên Supabase (gói Free: 1 GB storage, file tối đa 50 MB). App tự cắt file lớn và giới hạn dung lượng ở 950 MB. Không cấu hình thì app vẫn chạy, chỉ không có thư viện.
+
+1. **Tạo project (một lần):** vào https://supabase.com → **New project**, region **Southeast Asia (Singapore)**.
+   - **SQL Editor** → **New query** → dán toàn bộ `deploy/supabase/schema.sql` → **Run**.
+   - Kiểm tra: **Table Editor** có 5 bảng, **Storage** có bucket `videos` ở chế độ Private.
+2. **Lấy thông tin:** **Project Settings → API Keys**.
+   - Project URL: `https://<ref>.supabase.co`. Dán thừa đuôi `/rest/v1/` cũng được, script tự bỏ.
+   - **Secret key** `sb_secret_...`; project cũ thì dùng key `service_role`. Key này có toàn quyền: không dán vào chat, không commit.
+3. **Điền vào server** (máy đã cài từ trước cũng làm bước này):
+   ```bash
+   bash ~/pblcv/deploy/configure-app.sh
+   ```
+   Script hỏi URL, secret key và mật khẩu `/admin`, ghi vào `deploy/.env` (quyền 600), kiểm tra kết nối Supabase rồi khởi động lại app. Dòng `Supabase: OK` nghĩa là đã nối được.
+4. **Giữ project không bị tạm dừng:** Supabase gói Free tạm dừng project sau 1 tuần không có truy cập. Workflow `.github/workflows/supabase-keepalive.yml` gửi một truy vấn nhỏ mỗi ngày, kể cả khi EC2 tắt. Cần thêm trong GitHub → **Settings → Secrets and variables → Actions**:
+
+   | Tab | Tên | Giá trị |
+   | :--- | :--- | :--- |
+   | Variables | `SUPABASE_URL` | `https://<ref>.supabase.co` |
+   | Secrets | `SUPABASE_SECRET_KEY` | secret key ở bước 2 |
+
+   Nếu project đã bị tạm dừng: vào dashboard Supabase bấm **Restore**. Trong lúc đó app vẫn chạy, chỉ thư viện không dùng được và `/admin` báo lỗi.
+
+Máy đã cài trước ngày 28/11/2026: sau lần deploy có commit này, web hết hỏi mật khẩu Caddy ngay. Gallery và `/admin` chỉ bật sau khi chạy bước 3. Các dòng `AUTH_USER`/`AUTH_HASH` cũ trong `deploy/.env` không còn tác dụng, để nguyên cũng không sao.

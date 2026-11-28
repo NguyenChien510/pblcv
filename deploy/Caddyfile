@@ -1,9 +1,7 @@
 # DOMAIN = "demo.example.com" (automatic HTTPS) or ":80" (plain HTTP, e.g. local test)
+# No login for users: the app itself has /admin with its own password (webapp/admin.py).
+# Caddy sends the visitor's address in X-Forwarded-For; the app trusts it (TRUST_PROXY=1 in docker-compose.yml).
 {$DOMAIN}
-
-basic_auth {
-	{$AUTH_USER} {$AUTH_HASH}
-}
 
 request_body {
 	max_size 300MB
